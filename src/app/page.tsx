@@ -1,65 +1,1437 @@
-import Image from "next/image";
+"use client";
+
+import React, { useState, useCallback, useMemo } from "react";
+import * as XLSX from "xlsx";
+import JSZip from "jszip";
+import {
+  FileSpreadsheet,
+  FileArchive,
+  ArrowRight,
+  CheckCircle2,
+  AlertCircle,
+  Download,
+  RefreshCw,
+  FileText,
+  Search,
+  Info,
+  ShieldCheck,
+  FolderOpen,
+  Sparkles,
+  HelpCircle,
+  Database,
+  Trash2,
+  AlertTriangle,
+  Flame,
+  Binary
+} from "lucide-react";
+
+interface ExcelRow {
+  [key: string]: any;
+}
+
+interface MatchResult {
+  originalName: string;
+  originalPath: string;
+  nicKey: string;
+  empNo: string | null;
+  status: "matched" | "unmatched_zip" | "duplicate_nic" | "duplicate_emp";
+  details?: string;
+}
+
+interface UnmatchedExcelRow {
+  nic: string;
+  empNo: string;
+  rowNumber: number;
+  originalRow: any;
+}
 
 export default function Home() {
+  // Application State
+  const [excelFile, setExcelFile] = useState<File | null>(null);
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [excelData, setExcelData] = useState<ExcelRow[]>([]);
+  const [sheets, setSheets] = useState<string[]>([]);
+  const [selectedSheet, setSelectedSheet] = useState<string>("");
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [nicColumn, setNicColumn] = useState<string>("");
+  const [empColumn, setEmpColumn] = useState<string>("");
+  
+  // ZIP State
+  const [zipInstance, setZipInstance] = useState<JSZip | null>(null);
+  const [zipFileList, setZipFileList] = useState<{ name: string; path: string; fileObj: JSZip.JSZipObject }[]>([]);
+  
+  // Processing States
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [progressText, setProgressText] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "matched" | "unmatched_zip" | "unmatched_excel">("all");
+  
+  // Renaming Settings
+  const [includeUnmatched, setIncludeUnmatched] = useState(false);
+  const [filenameSuffix, setFilenameSuffix] = useState("");
+  const [outputZipName, setOutputZipName] = useState("renamed_pdfs.zip");
+  
+  // Drop zone drag states
+  const [isDragExcel, setIsDragExcel] = useState(false);
+  const [isDragZip, setIsDragZip] = useState(false);
+
+  // Tab State for bilingual help
+  const [lang, setLang] = useState<"si" | "en">("si");
+
+  // Helper to normalize strings for matching (removes spaces, symbols, lowercase)
+  const normalizeNIC = (val: any): string => {
+    if (val === undefined || val === null) return "";
+    return String(val)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, ""); // keep only alphanumeric characters
+  };
+
+  // Extract NIC key from a filename (removes path, extension, and standardizes)
+  const getNicFromFilename = (filename: string): string => {
+    // Get file name without folders
+    const baseName = filename.split("/").pop() || filename;
+    // Remove extension .pdf
+    const nameWithoutExt = baseName.replace(/\.[^/.]+$/, "");
+    return normalizeNIC(nameWithoutExt);
+  };
+
+  // Reset Excel State
+  const handleResetExcel = () => {
+    setExcelFile(null);
+    setExcelData([]);
+    setSheets([]);
+    setSelectedSheet("");
+    setHeaders([]);
+    setNicColumn("");
+    setEmpColumn("");
+  };
+
+  // Reset ZIP State
+  const handleResetZip = () => {
+    setZipFile(null);
+    setZipInstance(null);
+    setZipFileList([]);
+  };
+
+  // Reset All
+  const handleResetAll = () => {
+    handleResetExcel();
+    handleResetZip();
+    setProgress(0);
+    setProgressText("");
+  };
+
+  // Parse Excel File
+  const parseExcelFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: "array" });
+        setSheets(workbook.SheetNames);
+        
+        if (workbook.SheetNames.length > 0) {
+          const defaultSheet = workbook.SheetNames[0];
+          setSelectedSheet(defaultSheet);
+          processSheet(workbook.Sheets[defaultSheet]);
+        }
+        setExcelFile(file);
+      } catch (error) {
+        alert("Excel ගොනුව කියවීමේදී දෝෂයක් ඇතිවිය. / Error reading Excel file: " + (error as Error).message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  // Process a selected Excel sheet
+  const processSheet = (sheet: XLSX.WorkSheet) => {
+    // Convert to JSON with header rows
+    const rows = XLSX.utils.sheet_to_json<any>(sheet, { defval: "" });
+    if (rows.length === 0) {
+      alert("තෝරාගත් Sheet එකෙහි දත්ත කිසිවක් හමුනොවිය. / No data found in the selected sheet.");
+      return;
+    }
+
+    setExcelData(rows);
+    
+    // Extract headers from the keys of the first row
+    const extractedHeaders = Object.keys(rows[0]);
+    setHeaders(extractedHeaders);
+
+    // Auto-detect columns (NIC & Employee No)
+    let autoNic = "";
+    let autoEmp = "";
+
+    const nicKeywords = ["nic", "identity", "id", "හඳුනුම්පත්", "ජා.හැ.", "card"];
+    const empKeywords = ["emp", "employee", "member", "නොම්මර", "අංකය", "id", "code", "no"];
+
+    // First try exact matches, then keyword contains
+    for (const header of extractedHeaders) {
+      const lowerHeader = header.toLowerCase();
+      
+      // Look for NIC
+      if (!autoNic) {
+        if (lowerHeader === "nic" || lowerHeader === "nic no" || lowerHeader === "nic number") {
+          autoNic = header;
+        }
+      }
+      
+      // Look for Employee Number
+      if (!autoEmp) {
+        if (
+          lowerHeader === "emp no" || 
+          lowerHeader === "emp number" || 
+          lowerHeader === "employee number" || 
+          lowerHeader === "employee no" ||
+          lowerHeader === "employee id" ||
+          lowerHeader === "emp_id" ||
+          lowerHeader === "emp_no"
+        ) {
+          autoEmp = header;
+        }
+      }
+    }
+
+    // Fuzzy matching if not found
+    if (!autoNic) {
+      autoNic = extractedHeaders.find(h => 
+        nicKeywords.some(keyword => h.toLowerCase().includes(keyword))
+      ) || "";
+    }
+    
+    if (!autoEmp) {
+      autoEmp = extractedHeaders.find(h => 
+        empKeywords.some(keyword => h.toLowerCase().includes(keyword)) && h !== autoNic
+      ) || "";
+    }
+
+    // Fallbacks
+    setNicColumn(autoNic || extractedHeaders[0] || "");
+    setEmpColumn(autoEmp || (extractedHeaders[1] !== autoNic ? extractedHeaders[1] : extractedHeaders[0]) || "");
+  };
+
+  // Handle Sheet Change
+  const handleSheetChange = (sheetName: string) => {
+    if (!excelFile) return;
+    setSelectedSheet(sheetName);
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const data = new Uint8Array(e.target?.result as ArrayBuffer);
+      const workbook = XLSX.read(data, { type: "array" });
+      const sheet = workbook.Sheets[sheetName];
+      processSheet(sheet);
+    };
+    reader.readAsArrayBuffer(excelFile);
+  };
+
+  // Parse ZIP File
+  const parseZipFile = async (file: File) => {
+    try {
+      setZipFile(file);
+      const zip = new JSZip();
+      const loadedZip = await zip.loadAsync(file);
+      setZipInstance(loadedZip);
+
+      const files: { name: string; path: string; fileObj: JSZip.JSZipObject }[] = [];
+      loadedZip.forEach((relativepath, fileObj) => {
+        // Only include PDF files and ignore directory markers
+        if (!fileObj.dir && relativepath.toLowerCase().endsWith(".pdf")) {
+          // Get filename
+          const filename = relativepath.split("/").pop() || relativepath;
+          files.push({
+            name: filename,
+            path: relativepath,
+            fileObj: fileObj
+          });
+        }
+      });
+
+      setZipFileList(files);
+    } catch (error) {
+      alert("ZIP ගොනුව කියවීමේදී දෝෂයක් ඇතිවිය. / Error reading ZIP file: " + (error as Error).message);
+      setZipFile(null);
+    }
+  };
+
+  // Drop Event Handlers for Excel
+  const handleDragExcel = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragExcel(e.type === "dragover" || e.type === "dragenter");
+  };
+
+  const handleDropExcel = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragExcel(false);
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      const file = files[0];
+      if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls") || file.name.endsWith(".csv")) {
+        parseExcelFile(file);
+      } else {
+        alert("කරුණාකර වලංගු Excel ගොනුවක් ලබාදෙන්න (.xlsx, .xls). / Please upload a valid Excel file.");
+      }
+    }
+  };
+
+  const handleFileChangeExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      parseExcelFile(files[0]);
+    }
+  };
+
+  // Drop Event Handlers for ZIP
+  const handleDragZip = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragZip(e.type === "dragover" || e.type === "dragenter");
+  };
+
+  const handleDropZip = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragZip(false);
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      const file = files[0];
+      if (file.name.endsWith(".zip")) {
+        parseZipFile(file);
+      } else {
+        alert("කරුණාකර වලංගු ZIP ගොනුවක් ලබාදෙන්න (.zip). / Please upload a valid ZIP file.");
+      }
+    }
+  };
+
+  const handleFileChangeZip = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      parseZipFile(files[0]);
+    }
+  };
+
+  // Computations for Mappings & Matches
+  const matchingData = useMemo(() => {
+    if (!nicColumn || !empColumn) return { matchedList: [], unmatchedExcelList: [], stats: { matched: 0, unmatchedZip: 0, unmatchedExcel: 0, totalZip: 0 } };
+
+    // 1. Create a Map of NIC -> Employee Number from Excel Data
+    const excelMap = new Map<string, { empNo: string; row: ExcelRow; matched: boolean; rowIdx: number }>();
+    const duplicateExcelNics = new Set<string>();
+
+    excelData.forEach((row, index) => {
+      const rawNic = row[nicColumn];
+      const rawEmp = row[empColumn];
+      
+      if (rawNic !== undefined && rawNic !== null && String(rawNic).trim() !== "") {
+        const nicKey = normalizeNIC(rawNic);
+        const empNo = String(rawEmp).trim();
+        
+        if (excelMap.has(nicKey)) {
+          duplicateExcelNics.add(nicKey);
+        } else {
+          excelMap.set(nicKey, {
+            empNo: empNo,
+            row: row,
+            matched: false,
+            rowIdx: index + 2 // 1-indexed + header row
+          });
+        }
+      }
+    });
+
+    // 2. Map ZIP Files
+    const matchedList: MatchResult[] = [];
+    const zipNicsSeen = new Set<string>();
+    const empNosUsed = new Set<string>();
+
+    zipFileList.forEach((zipFileItem) => {
+      const nicKey = getNicFromFilename(zipFileItem.name);
+      
+      if (!nicKey) {
+        matchedList.push({
+          originalName: zipFileItem.name,
+          originalPath: zipFileItem.path,
+          nicKey: "",
+          empNo: null,
+          status: "unmatched_zip",
+          details: "ගොනු නාමයෙන් NIC එකක් හඳුනාගත නොහැක / Cannot extract NIC from filename"
+        });
+        return;
+      }
+
+      if (zipNicsSeen.has(nicKey)) {
+        matchedList.push({
+          originalName: zipFileItem.name,
+          originalPath: zipFileItem.path,
+          nicKey: nicKey,
+          empNo: null,
+          status: "duplicate_nic",
+          details: `ZIP එක තුල මෙම NIC එක (${nicKey}) දෙවතාවක් පවතී / Duplicate NIC inside ZIP`
+        });
+        return;
+      }
+      
+      zipNicsSeen.add(nicKey);
+
+      const excelMatch = excelMap.get(nicKey);
+      if (excelMatch) {
+        const targetEmpNo = excelMatch.empNo;
+        excelMatch.matched = true; // Mark as matched
+
+        if (empNosUsed.has(targetEmpNo)) {
+          matchedList.push({
+            originalName: zipFileItem.name,
+            originalPath: zipFileItem.path,
+            nicKey: nicKey,
+            empNo: targetEmpNo,
+            status: "duplicate_emp",
+            details: `Employee Number (${targetEmpNo}) දැනටමත් වෙනත් NIC එකකට භාවිතා කර ඇත / Employee No already used`
+          });
+        } else {
+          empNosUsed.add(targetEmpNo);
+          matchedList.push({
+            originalName: zipFileItem.name,
+            originalPath: zipFileItem.path,
+            nicKey: nicKey,
+            empNo: targetEmpNo,
+            status: "matched"
+          });
+        }
+      } else {
+        matchedList.push({
+          originalName: zipFileItem.name,
+          originalPath: zipFileItem.path,
+          nicKey: nicKey,
+          empNo: null,
+          status: "unmatched_zip",
+          details: "Excel පත්‍රයේ මෙම NIC එක හමුනොවිය / NIC not found in Excel"
+        });
+      }
+    });
+
+    // 3. Find unmatched Excel Rows
+    const unmatchedExcelList: UnmatchedExcelRow[] = [];
+    excelMap.forEach((val, key) => {
+      if (!val.matched) {
+        unmatchedExcelList.push({
+          nic: key,
+          empNo: val.empNo,
+          rowNumber: val.rowIdx,
+          originalRow: val.row
+        });
+      }
+    });
+
+    // Stats
+    const stats = {
+      matched: matchedList.filter((m) => m.status === "matched").length,
+      unmatchedZip: matchedList.filter((m) => m.status !== "matched").length,
+      unmatchedExcel: unmatchedExcelList.length,
+      totalZip: zipFileList.length
+    };
+
+    return { matchedList, unmatchedExcelList, stats };
+  }, [excelData, zipFileList, nicColumn, empColumn]);
+
+  // Filtered lists for rendering preview
+  const filteredList = useMemo(() => {
+    const { matchedList } = matchingData;
+    let items = matchedList;
+
+    if (statusFilter === "matched") {
+      items = matchedList.filter((m) => m.status === "matched");
+    } else if (statusFilter === "unmatched_zip") {
+      items = matchedList.filter((m) => m.status !== "matched");
+    }
+
+    if (searchQuery.trim() !== "") {
+      const q = searchQuery.toLowerCase();
+      items = items.filter(
+        (m) =>
+          m.originalName.toLowerCase().includes(q) ||
+          m.nicKey.toLowerCase().includes(q) ||
+          (m.empNo && m.empNo.toLowerCase().includes(q))
+      );
+    }
+
+    return items;
+  }, [matchingData, statusFilter, searchQuery]);
+
+  // Generate Renamed ZIP File
+  const handleRenameAndDownload = async () => {
+    if (!zipInstance || matchingData.stats.matched === 0) {
+      alert("පරිවර්තනය කිරීමට ගැලපෙන ගොනු නොමැත. / No matching files to rename.");
+      return;
+    }
+
+    setIsProcessing(true);
+    setProgress(5);
+    setProgressText("නව ZIP ගොනුව සකසමින් පවතී... / Initializing new ZIP archive...");
+
+    try {
+      const newZip = new JSZip();
+      const { matchedList } = matchingData;
+      const totalFiles = matchedList.length;
+
+      let processedCount = 0;
+
+      for (let i = 0; i < totalFiles; i++) {
+        const item = matchedList[i];
+        
+        // Find JSZipObject
+        const origZipFile = zipFileList.find((f) => f.path === item.originalPath);
+
+        if (!origZipFile) continue;
+
+        const isMatched = item.status === "matched";
+
+        if (isMatched && item.empNo) {
+          setProgressText(`පරිවර්තනය කරමින්: ${item.originalName} -> ${item.empNo}${filenameSuffix}.pdf`);
+          
+          // Get PDF Blob or Uint8Array
+          const content = await origZipFile.fileObj.async("uint8array");
+          const newName = `${item.empNo}${filenameSuffix}.pdf`;
+          
+          // Add to new zip
+          newZip.file(newName, content);
+          processedCount++;
+        } else if (includeUnmatched) {
+          setProgressText(`එලෙසම ඇතුලත් කරමින්: ${item.originalName}`);
+          const content = await origZipFile.fileObj.async("uint8array");
+          newZip.file(item.originalName, content);
+          processedCount++;
+        }
+
+        // Update progress dynamically
+        const progressVal = Math.floor((i / totalFiles) * 70) + 10;
+        setProgress(progressVal);
+      }
+
+      setProgress(85);
+      setProgressText("ZIP ගොනුව සම්පීඩනය කරමින්... (මේ සඳහා සුළු වේලාවක් ගතවිය හැක) / Compressing ZIP... (This may take a moment)");
+
+      // Generate the ZIP blob
+      const contentBlob = await newZip.generateAsync({ type: "blob" }, (metadata) => {
+        const zipProgress = Math.floor(metadata.percent * 0.15) + 85;
+        setProgress(zipProgress);
+      });
+
+      setProgress(100);
+      setProgressText("පරිවර්තනය සාර්ථකයි! බාගත කිරීම ආරම්භ වේ... / Rename successful! Download starting...");
+
+      // Download trigger
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(contentBlob);
+      link.download = outputZipName.endsWith(".zip") ? outputZipName : `${outputZipName}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      setTimeout(() => {
+        setIsProcessing(false);
+        setProgress(0);
+        setProgressText("");
+      }, 3000);
+
+    } catch (err) {
+      alert("ZIP ගොනුව සැකසීමේදී දෝෂයක් සිදු විය / Error during ZIP processing: " + (err as Error).message);
+      setIsProcessing(false);
+      setProgress(0);
+      setProgressText("");
+    }
+  };
+
+  // Generate Sample Demo Files so the user can easily test the app!
+  const generateDemoFiles = async () => {
+    setIsProcessing(true);
+    setProgress(10);
+    setProgressText("ආදර්ශ දත්ත සකසමින්... / Creating demo Excel data...");
+
+    try {
+      // 1. Create Demo Excel Data
+      const demoData = [
+        { "Employee Name": "Chathura Prasad", "NIC Number": "951234567V", "Employee Number": "EMP-2026-001", "Department": "IT" },
+        { "Employee Name": "Nipuni Silva", "NIC Number": "978564321V", "Employee Number": "EMP-2026-002", "Department": "HR" },
+        { "Employee Name": "Kasun Perera", "NIC Number": "199212345678", "Employee Number": "EMP-2026-003", "Department": "Finance" },
+        { "Employee Name": "Ruwan Fernando", "NIC Number": "908765432V", "Employee Number": "EMP-2026-004", "Department": "Operations" },
+        { "Employee Name": "Sanduni Jayasinghe", "NIC Number": "981230987V", "Employee Number": "EMP-2026-005", "Department": "Marketing" }
+      ];
+
+      const worksheet = XLSX.utils.json_to_sheet(demoData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Employees");
+      
+      const excelBuffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+      const excelBlob = new Blob([excelBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      
+      setProgress(40);
+      setProgressText("ආදර්ශ PDF සහිත ZIP ගොනුවක් සකසමින්... / Creating demo PDFs in ZIP...");
+
+      // 2. Create Demo ZIP file containing mock PDFs with NIC filenames
+      const zip = new JSZip();
+      
+      // We will create 5 small text/pdf-like empty mock documents
+      const pdfMockContent = "%PDF-1.4 Mock PDF Content representing salary slip or certificate for testing purposes.";
+      
+      zip.file("951234567V.pdf", pdfMockContent);
+      zip.file("978564321v.pdf", pdfMockContent); // case variation test
+      zip.file("199212345678.pdf", pdfMockContent); // 12-digit test
+      zip.file("908765432V.pdf", pdfMockContent);
+      zip.file("999999999V.pdf", pdfMockContent); // unmatched in Excel test
+      
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+
+      setProgress(80);
+      setProgressText("ගොනු බාගත කරමින්... / Downloading mock files...");
+
+      // Download Excel
+      const excelLink = document.createElement("a");
+      excelLink.href = URL.createObjectURL(excelBlob);
+      excelLink.download = "sample_employee_list.xlsx";
+      document.body.appendChild(excelLink);
+      excelLink.click();
+      document.body.removeChild(excelLink);
+
+      // Download Zip
+      const zipLink = document.createElement("a");
+      zipLink.href = URL.createObjectURL(zipBlob);
+      zipLink.download = "sample_nic_pdfs.zip";
+      document.body.appendChild(zipLink);
+      zipLink.click();
+      document.body.removeChild(zipLink);
+
+      setProgress(100);
+      setProgressText("සාර්ථකයි! ගොනු 2ක් බාගත විය. / Success! 2 mock files downloaded. Drag and drop them to test!");
+
+      setTimeout(() => {
+        setIsProcessing(false);
+        setProgress(0);
+        setProgressText("");
+      }, 4000);
+
+    } catch (err) {
+      alert("Error generating demo data: " + (err as Error).message);
+      setIsProcessing(false);
+    }
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="flex-1 min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-x-hidden selection:bg-teal-500 selection:text-slate-900">
+      
+      {/* Background Ambient Glows */}
+      <div className="absolute top-0 left-1/4 w-96 h-96 bg-teal-500/10 rounded-full blur-[120px] pointer-events-none" />
+      <div className="absolute top-1/3 right-1/4 w-96 h-96 bg-emerald-500/10 rounded-full blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-10 left-1/3 w-96 h-96 bg-cyan-500/10 rounded-full blur-[120px] pointer-events-none" />
+
+      {/* Premium Header */}
+      <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-50 transition-all duration-300">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-11 w-11 rounded-xl bg-gradient-to-tr from-teal-500 to-emerald-400 p-0.5 shadow-lg shadow-teal-500/20 flex items-center justify-center">
+              <div className="h-full w-full rounded-[10px] bg-slate-900 flex items-center justify-center">
+                <Binary className="h-5 w-5 text-teal-400 animate-pulse" />
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-100 to-teal-400 bg-clip-text text-transparent">
+                  ZIP Rename Nexus
+                </span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-teal-500/10 border border-teal-500/20 text-teal-400 font-medium">
+                  v1.2
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 font-light mt-0.5">
+                NIC to Employee Code PDF Smart Relabeler
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            {/* Language Switcher */}
+            <div className="bg-slate-900 border border-slate-800 p-1 rounded-lg flex gap-1">
+              <button 
+                onClick={() => setLang("si")}
+                className={`text-xs px-3 py-1.5 rounded-md font-medium transition-all duration-200 ${
+                  lang === "si" 
+                    ? "bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20 font-bold" 
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                සිංහල
+              </button>
+              <button 
+                onClick={() => setLang("en")}
+                className={`text-xs px-3 py-1.5 rounded-md font-medium transition-all duration-200 ${
+                  lang === "en" 
+                    ? "bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20 font-bold" 
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                English
+              </button>
+            </div>
+
+            {/* Test Demo Button */}
+            <button
+              onClick={generateDemoFiles}
+              disabled={isProcessing}
+              className="hidden sm:flex items-center gap-2 text-xs font-semibold px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700/80 border border-slate-700/80 transition-all duration-200 disabled:opacity-50 text-teal-400 hover:text-teal-300 active:scale-95"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              <Sparkles className="h-3.5 w-3.5" />
+              {lang === "si" ? "ආදර්ශ ගොනු ලබාගන්න" : "Get Sample Files"}
+            </button>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col gap-8 relative z-10">
+        
+        {/* Bilingual Summary Explanation banner */}
+        <div className="bg-gradient-to-r from-teal-950/40 to-emerald-950/20 border border-teal-500/20 rounded-2xl p-5 shadow-xl relative overflow-hidden backdrop-blur-sm">
+          <div className="absolute right-0 top-0 translate-x-12 -translate-y-12 w-48 h-48 bg-teal-500/5 rounded-full blur-3xl pointer-events-none" />
+          <div className="flex gap-4 items-start">
+            <div className="p-3 bg-teal-500/10 border border-teal-500/20 rounded-xl text-teal-400 shadow-inner mt-1">
+              <Info className="h-5 w-5" />
+            </div>
+            <div className="flex-1">
+              {lang === "si" ? (
+                <>
+                  <h2 className="text-base font-semibold text-teal-300">භාවිතා කරන ආකාරය (How to Use)</h2>
+                  <p className="text-sm text-slate-300 mt-1 leading-relaxed">
+                    1. සේවක අංකය (Employee No) සහ ජාතික හැඳුනුම්පත් අංකය (NIC) සහිත <strong>Excel ගොනුව</strong> පළමුව උඩුගත කරන්න.<br />
+                    2. PDF ගොනු ඇතුලත් <strong>ZIP ගොනුව</strong> උඩුගත කරන්න (එහි PDF වල නම ලෙස NIC අංකය තිබිය යුතුය).<br />
+                    3. මෙම පද්ධතිය මඟින් ස්වයංක්‍රීයව NIC අංක ගළපා PDF ගොනු වල නම සේවක අංකයට වෙනස් කර නව ZIP ගොනුවක් සකසා දෙනු ඇත.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-base font-semibold text-teal-300">How It Works</h2>
+                  <p className="text-sm text-slate-300 mt-1 leading-relaxed">
+                    1. Upload your <strong>Excel sheet</strong> containing both Employee Numbers and NIC Numbers.<br />
+                    2. Upload your <strong>ZIP file</strong> containing PDFs currently named with NIC numbers (e.g. <code className="bg-slate-900 px-1 py-0.5 rounded text-teal-400 font-mono text-xs">951234567V.pdf</code>).<br />
+                    3. The app will automatically cross-match NICs, map them to their corresponding Employee Codes, rename the PDFs, and generate a new ZIP to download!
+                  </p>
+                </>
+              )}
+              
+              <div className="mt-3 flex sm:hidden">
+                <button
+                  onClick={generateDemoFiles}
+                  className="flex items-center gap-1.5 text-xs font-semibold text-teal-400 hover:text-teal-300"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  {lang === "si" ? "ආදර්ශ ගොනු ලබාගෙන පරීක්ෂා කරන්න" : "Download sample test files"}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
+
+        {/* File Dropping Section */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          
+          {/* File Input 1: Excel Sheet */}
+          <div 
+            className={`relative rounded-2xl border-2 transition-all duration-300 overflow-hidden bg-slate-900/40 backdrop-blur-sm shadow-lg ${
+              isDragExcel 
+                ? "border-teal-400 bg-teal-500/5 shadow-teal-500/5" 
+                : excelFile 
+                  ? "border-emerald-500/40 hover:border-emerald-500/60" 
+                  : "border-slate-800 hover:border-slate-700/80"
+            }`}
+            onDragOver={handleDragExcel}
+            onDragLeave={handleDragExcel}
+            onDrop={handleDropExcel}
+          >
+            {/* Top design line */}
+            <div className={`h-1.5 w-full ${excelFile ? "bg-emerald-500" : "bg-teal-500"}`} />
+
+            <div className="p-6 sm:p-8 flex flex-col items-center text-center">
+              <div className={`h-14 w-14 rounded-2xl flex items-center justify-center mb-4 transition-all duration-300 ${
+                excelFile 
+                  ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-400" 
+                  : "bg-teal-500/10 border border-teal-500/30 text-teal-400"
+              }`}>
+                <FileSpreadsheet className="h-7 w-7" />
+              </div>
+
+              {!excelFile ? (
+                <>
+                  <h3 className="text-base font-bold text-slate-100">
+                    {lang === "si" ? "Excel ගොනුව මෙතැනට Drag & Drop කරන්න" : "Drag & Drop Excel File Here"}
+                  </h3>
+                  <p className="text-xs text-slate-400 max-w-sm mt-1.5">
+                    {lang === "si" ? "හෝ පරිගණකයෙන් තෝරන්න (.xlsx, .xls, .csv)" : "or browse your local files (.xlsx, .xls, .csv)"}
+                  </p>
+                  
+                  <label className="mt-5 px-5 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-slate-600 rounded-xl text-xs font-semibold text-slate-200 transition-all duration-200 cursor-pointer shadow-sm active:scale-95">
+                    {lang === "si" ? "Excel ගොනුව තෝරන්න" : "Browse Excel File"}
+                    <input 
+                      type="file" 
+                      accept=".xlsx,.xls,.csv" 
+                      className="hidden" 
+                      onChange={handleFileChangeExcel}
+                    />
+                  </label>
+                </>
+              ) : (
+                <div className="w-full">
+                  <div className="flex items-center justify-between gap-3 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 mb-5">
+                    <div className="flex items-center gap-3 overflow-hidden">
+                      <div className="bg-emerald-500/20 text-emerald-400 p-2 rounded-lg shrink-0">
+                        <CheckCircle2 className="h-4 w-4" />
+                      </div>
+                      <div className="text-left overflow-hidden">
+                        <p className="text-xs font-bold text-slate-200 truncate">{excelFile.name}</p>
+                        <p className="text-[10px] text-slate-500 font-mono mt-0.5">{(excelFile.size / 1024).toFixed(1)} KB</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleResetExcel}
+                      className="p-1.5 hover:bg-rose-500/10 text-slate-500 hover:text-rose-400 rounded-lg transition-all duration-200"
+                      title="Remove file"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  {/* Excel Details & Config */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-left">
+                    
+                    {/* Sheet Selection */}
+                    {sheets.length > 1 && (
+                      <div className="sm:col-span-2">
+                        <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                          {lang === "si" ? "පත්‍රිකාව තෝරන්න (Select Sheet)" : "Select Sheet"}
+                        </label>
+                        <select
+                          value={selectedSheet}
+                          onChange={(e) => handleSheetChange(e.target.value)}
+                          className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-medium text-slate-200 outline-none focus:border-teal-500 transition-all duration-200"
+                        >
+                          {sheets.map((s) => (
+                            <option key={s} value={s}>{s}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* NIC Column Mapped */}
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                        {lang === "si" ? "NIC තීරුව (NIC Column)" : "NIC Column"}
+                      </label>
+                      <select
+                        value={nicColumn}
+                        onChange={(e) => setNicColumn(e.target.value)}
+                        className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-medium text-slate-200 outline-none focus:border-teal-500 transition-all duration-200"
+                      >
+                        <option value="" disabled>-- Select Column --</option>
+                        {headers.map((h) => (
+                          <option key={h} value={h}>{h}</option>
+                        ))}
+                      </select>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        {lang === "si" ? "PDF නාමය සමඟ සසඳන අගය" : "Value matching PDF filename"}
+                      </p>
+                    </div>
+
+                    {/* Employee Code Column Mapped */}
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                        {lang === "si" ? "සේවක අංක තීරුව (Employee No)" : "Employee No Column"}
+                      </label>
+                      <select
+                        value={empColumn}
+                        onChange={(e) => setEmpColumn(e.target.value)}
+                        className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-medium text-slate-200 outline-none focus:border-teal-500 transition-all duration-200"
+                      >
+                        <option value="" disabled>-- Select Column --</option>
+                        {headers.map((h) => (
+                          <option key={h} value={h}>{h}</option>
+                        ))}
+                      </select>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        {lang === "si" ? "නව PDF නාමය ලෙස යොදන අගය" : "Target filename value"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 p-3 bg-slate-950/40 rounded-xl border border-slate-850 text-left">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                      {lang === "si" ? "දත්ත පෙරදසුන (Excel Rows)" : "Data Preview (First 2 rows)"}
+                    </p>
+                    <div className="overflow-x-auto mt-1.5">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-850 text-slate-400 font-semibold">
+                            <th className="pb-1 pr-3">Row</th>
+                            <th className="pb-1 pr-3 truncate max-w-[120px]">{nicColumn || "NIC"}</th>
+                            <th className="pb-1 truncate max-w-[120px]">{empColumn || "Employee No"}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {excelData.slice(0, 2).map((row, idx) => (
+                            <tr key={idx} className="text-slate-300 font-mono">
+                              <td className="py-1 pr-3">#{idx + 2}</td>
+                              <td className="py-1 pr-3 truncate max-w-[120px]">{String(row[nicColumn] || "")}</td>
+                              <td className="py-1 truncate max-w-[120px]">{String(row[empColumn] || "")}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* File Input 2: ZIP Archive */}
+          <div 
+            className={`relative rounded-2xl border-2 transition-all duration-300 overflow-hidden bg-slate-900/40 backdrop-blur-sm shadow-lg ${
+              isDragZip 
+                ? "border-teal-400 bg-teal-500/5 shadow-teal-500/5" 
+                : zipFile 
+                  ? "border-emerald-500/40 hover:border-emerald-500/60" 
+                  : "border-slate-800 hover:border-slate-700/80"
+            }`}
+            onDragOver={handleDragZip}
+            onDragLeave={handleDragZip}
+            onDrop={handleDropZip}
+          >
+            {/* Top design line */}
+            <div className={`h-1.5 w-full ${zipFile ? "bg-emerald-500" : "bg-teal-500"}`} />
+
+            <div className="p-6 sm:p-8 flex flex-col items-center text-center">
+              <div className={`h-14 w-14 rounded-2xl flex items-center justify-center mb-4 transition-all duration-300 ${
+                zipFile 
+                  ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-400" 
+                  : "bg-teal-500/10 border border-teal-500/30 text-teal-400"
+              }`}>
+                <FileArchive className="h-7 w-7" />
+              </div>
+
+              {!zipFile ? (
+                <>
+                  <h3 className="text-base font-bold text-slate-100">
+                    {lang === "si" ? "PDF සහිත ZIP ගොනුව මෙතැනට Drag & Drop කරන්න" : "Drag & Drop ZIP File Here"}
+                  </h3>
+                  <p className="text-xs text-slate-400 max-w-sm mt-1.5">
+                    {lang === "si" ? "හෝ පරිගණකයෙන් තෝරන්න (.zip)" : "or browse your local files (.zip)"}
+                  </p>
+                  
+                  <label className="mt-5 px-5 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-slate-600 rounded-xl text-xs font-semibold text-slate-200 transition-all duration-200 cursor-pointer shadow-sm active:scale-95">
+                    {lang === "si" ? "ZIP ගොනුව තෝරන්න" : "Browse ZIP File"}
+                    <input 
+                      type="file" 
+                      accept=".zip" 
+                      className="hidden" 
+                      onChange={handleFileChangeZip}
+                    />
+                  </label>
+                </>
+              ) : (
+                <div className="w-full h-full flex flex-col justify-between">
+                  <div className="flex items-center justify-between gap-3 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 mb-5">
+                    <div className="flex items-center gap-3 overflow-hidden">
+                      <div className="bg-emerald-500/20 text-emerald-400 p-2 rounded-lg shrink-0">
+                        <CheckCircle2 className="h-4 w-4" />
+                      </div>
+                      <div className="text-left overflow-hidden">
+                        <p className="text-xs font-bold text-slate-200 truncate">{zipFile.name}</p>
+                        <p className="text-[10px] text-slate-500 font-mono mt-0.5">{(zipFile.size / (1024 * 1024)).toFixed(2)} MB</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleResetZip}
+                      className="p-1.5 hover:bg-rose-500/10 text-slate-500 hover:text-rose-400 rounded-lg transition-all duration-200"
+                      title="Remove file"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  <div className="bg-slate-950/40 p-4 rounded-xl border border-slate-850 text-left mb-4">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                      {lang === "si" ? "ZIP ගොනුවේ අන්තර්ගතය" : "ZIP Archive Details"}
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-4">
+                      <div>
+                        <span className="text-xs text-slate-400">
+                          {lang === "si" ? "මුළු PDF ගොනු ගණන" : "Total PDF files"}
+                        </span>
+                        <p className="text-xl font-bold font-mono text-teal-400 mt-0.5">
+                          {zipFileList.length}
+                        </p>
+                      </div>
+                      <div>
+                        <span className="text-xs text-slate-400">
+                          {lang === "si" ? "ගොනු ආකෘතිය" : "Detected Format"}
+                        </span>
+                        <p className="text-xs font-bold text-slate-200 mt-1 flex items-center gap-1.5">
+                          <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                          Adobe PDF (.pdf)
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-slate-950/30 rounded-xl border border-slate-850/50 text-left">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                      {lang === "si" ? "හඳුනාගත් ZIP ගොනු නාමයන් (පළමු 2)" : "Extracted ZIP Names (First 2)"}
+                    </p>
+                    <ul className="mt-1.5 space-y-1">
+                      {zipFileList.slice(0, 2).map((item, idx) => (
+                        <li key={idx} className="text-xs text-slate-300 font-mono flex items-center gap-1.5 truncate">
+                          <FileText className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+                          <span className="truncate">{item.name}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Global Progress Overlay if processing */}
+        {isProcessing && (
+          <div className="bg-slate-900 border border-teal-500/30 rounded-2xl p-6 shadow-xl shadow-teal-950/20 relative overflow-hidden transition-all duration-300">
+            <div className="absolute top-0 left-0 h-1 bg-teal-500/20 w-full" />
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2.5">
+                  <RefreshCw className="h-4.5 w-4.5 text-teal-400 animate-spin" />
+                  <span className="text-sm font-semibold text-slate-200">
+                    {lang === "si" ? "ක්‍රියාවලිය සිදුවෙමින් පවතී..." : "Processing File Operations..."}
+                  </span>
+                </div>
+                <span className="text-sm font-bold text-teal-400 font-mono">{progress}%</span>
+              </div>
+              
+              {/* Progress Bar Container */}
+              <div className="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden border border-slate-800">
+                <div 
+                  className="bg-gradient-to-r from-teal-500 to-emerald-400 h-full rounded-full transition-all duration-300 shadow-md"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              
+              <p className="text-xs text-slate-400 italic truncate font-mono">
+                {progressText}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Matching Analysis and Actions Panel */}
+        {excelFile && zipFile && (
+          <div className="flex flex-col gap-6">
+            
+            {/* Quick Statistics Grid */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              
+              {/* Stat 1: Matched */}
+              <div className="bg-slate-900/60 border border-slate-800/80 p-4 rounded-xl text-left backdrop-blur-sm">
+                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider block">
+                  {lang === "si" ? "පූර්ණ ලෙස ගැලපෙන" : "Fully Matched"}
+                </span>
+                <div className="flex items-baseline gap-2 mt-1">
+                  <span className="text-2xl font-bold font-mono text-emerald-400">
+                    {matchingData.stats.matched}
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    / {zipFileList.length}
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1 truncate">
+                  {lang === "si" ? "සේවක අංකයට වෙනස් වේ" : "Will be renamed successfully"}
+                </p>
+              </div>
+
+              {/* Stat 2: Unmatched inside ZIP */}
+              <div className="bg-slate-900/60 border border-slate-800/80 p-4 rounded-xl text-left backdrop-blur-sm">
+                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider block">
+                  {lang === "si" ? "Excel හි නොමැති PDF" : "ZIP PDFs without Excel row"}
+                </span>
+                <div className="flex items-baseline gap-2 mt-1">
+                  <span className="text-2xl font-bold font-mono text-amber-400">
+                    {matchingData.matchedList.filter(m => m.status === "unmatched_zip").length}
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    / {zipFileList.length}
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1 truncate">
+                  {lang === "si" ? "NIC එක Excel ලැයිස්තුවේ නැත" : "NIC not present in sheet"}
+                </p>
+              </div>
+
+              {/* Stat 3: Unmatched Excel rows */}
+              <div className="bg-slate-900/60 border border-slate-800/80 p-4 rounded-xl text-left backdrop-blur-sm">
+                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider block">
+                  {lang === "si" ? "ගොනු නොමැති සේවකයින්" : "Excel Employees without PDF"}
+                </span>
+                <div className="flex items-baseline gap-2 mt-1">
+                  <span className="text-2xl font-bold font-mono text-cyan-400">
+                    {matchingData.stats.unmatchedExcel}
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    / {excelData.length}
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1 truncate">
+                  {lang === "si" ? "ගැලපෙන PDF එකක් ZIP එකේ නැත" : "No matching PDF in archive"}
+                </p>
+              </div>
+
+              {/* Stat 4: Duplicates & Warnings */}
+              <div className="bg-slate-900/60 border border-slate-800/80 p-4 rounded-xl text-left backdrop-blur-sm">
+                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider block">
+                  {lang === "si" ? "අනතුරු ඇඟවීම්" : "Duplicate Warnings"}
+                </span>
+                <div className="flex items-baseline gap-2 mt-1">
+                  <span className={`text-2xl font-bold font-mono ${
+                    matchingData.matchedList.filter(m => m.status === "duplicate_nic" || m.status === "duplicate_emp").length > 0 
+                      ? "text-rose-400" 
+                      : "text-slate-400"
+                  }`}>
+                    {matchingData.matchedList.filter(m => m.status === "duplicate_nic" || m.status === "duplicate_emp").length}
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    {lang === "si" ? "දෝෂ" : "conflicts"}
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1 truncate">
+                  {lang === "si" ? "සැක සහිත හෝ අනුපිටපත් ගොනු" : "Duplicate NIC/Employee ID checks"}
+                </p>
+              </div>
+
+            </div>
+
+            {/* Options and Action Button Card */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
+              <div className="absolute right-0 bottom-0 translate-x-10 translate-y-10 w-32 h-32 bg-emerald-500/5 rounded-full blur-2xl pointer-events-none" />
+              
+              <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                <Database className="h-5 w-5 text-teal-400" />
+                {lang === "si" ? "පරිවර්තන සැකසුම් සහ බාගත කිරීම්" : "Relabeling Settings & Output Archive"}
+              </h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-5 items-end">
+                
+                {/* Setting 1: Custom Suffix */}
+                <div>
+                  <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                    {lang === "si" ? "ගොනු නාමයේ අගට එකතු කිරීම්" : "Filename Suffix (Optional)"}
+                  </label>
+                  <input
+                    type="text"
+                    value={filenameSuffix}
+                    onChange={(e) => setFilenameSuffix(e.target.value)}
+                    placeholder="e.g. _slip, _2026"
+                    className="mt-1.5 w-full bg-slate-950 border border-slate-800 hover:border-slate-700/80 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 font-mono outline-none focus:border-teal-500 transition-all duration-200"
+                  />
+                  <span className="text-[9px] text-slate-500 mt-1 block">
+                    {lang === "si" ? "උදා: EMP-001_slip.pdf" : "Result: EMP-001_slip.pdf"}
+                  </span>
+                </div>
+
+                {/* Setting 2: Unmatched Action toggle */}
+                <div className="flex flex-col gap-2">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                    {lang === "si" ? "නොගැලපෙන ZIP PDF ගොනු" : "ZIP PDFs without match"}
+                  </span>
+                  
+                  <label className="flex items-center gap-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700/80 rounded-xl px-3.5 py-2.5 text-xs text-slate-300 font-medium cursor-pointer transition-all duration-200">
+                    <input
+                      type="checkbox"
+                      checked={includeUnmatched}
+                      onChange={(e) => setIncludeUnmatched(e.target.checked)}
+                      className="rounded bg-slate-900 border-slate-800 text-teal-500 focus:ring-teal-500 h-4 w-4 shrink-0"
+                    />
+                    <span>
+                      {lang === "si" ? "පෙර නමින්ම ZIP එකට එක්කරන්න" : "Keep in ZIP with old name"}
+                    </span>
+                  </label>
+                </div>
+
+                {/* Setting 3: Output ZIP File name */}
+                <div>
+                  <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                    {lang === "si" ? "ප්‍රතිදාන ZIP නම" : "Output ZIP Filename"}
+                  </label>
+                  <input
+                    type="text"
+                    value={outputZipName}
+                    onChange={(e) => setOutputZipName(e.target.value)}
+                    placeholder="renamed_pdfs.zip"
+                    className="mt-1.5 w-full bg-slate-950 border border-slate-800 hover:border-slate-700/80 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 font-mono outline-none focus:border-teal-500 transition-all duration-200"
+                  />
+                </div>
+
+              </div>
+
+              {/* Main Action Button */}
+              <div className="mt-6 pt-6 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4">
+                
+                <div className="text-left">
+                  <span className="text-xs text-slate-400 flex items-center gap-1.5">
+                    <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
+                    {lang === "si" 
+                      ? "සැකසීම සම්පූර්ණයෙන්ම බ්‍රවුසරය තුල සිදුවේ. කිසිදු ගොනුවක් අපගේ සර්වර් වෙත යොමු නොවේ." 
+                      : "Processed 100% locally. Your private files never leave your computer."
+                    }
+                  </span>
+                </div>
+
+                <button
+                  onClick={handleRenameAndDownload}
+                  disabled={isProcessing || matchingData.stats.matched === 0}
+                  className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-400 hover:from-teal-400 hover:to-emerald-300 text-slate-950 font-bold text-sm tracking-wide shadow-lg shadow-teal-500/10 hover:shadow-teal-400/20 flex items-center justify-center gap-2.5 transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed hover:-translate-y-0.5 active:translate-y-0 active:scale-98"
+                >
+                  <Download className="h-4.5 w-4.5" />
+                  {lang === "si" 
+                    ? `පරිවර්තනය කර බාගන්න (ගොනු ${matchingData.stats.matched})` 
+                    : `Rename & Download ZIP (${matchingData.stats.matched} files)`
+                  }
+                </button>
+
+              </div>
+
+            </div>
+
+            {/* Renaming Preview & List Panel */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+              
+              {/* Header inside Panel */}
+              <div className="px-6 py-5 border-b border-slate-800 bg-slate-900/80 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                
+                <div>
+                  <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider">
+                    {lang === "si" ? "පරිවර්තන පෙරදසුන (Rename Preview Table)" : "Relabeling Mapping Results"}
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {lang === "si" ? "ZIP ගොනු සැබෑ ලෙස වෙනස් වන ආකාරය" : "Compare original filenames with targets"}
+                  </p>
+                </div>
+
+                {/* Filter and search controls */}
+                <div className="flex flex-wrap items-center gap-3">
+                  
+                  {/* Search Bar */}
+                  <div className="relative max-w-xs w-full">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-500" />
+                    <input
+                      type="text"
+                      placeholder={lang === "si" ? "සොයන්න (NIC/EMP)..." : "Search files..."}
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 hover:border-slate-700/80 rounded-xl pl-9 pr-4 py-2 text-xs text-slate-200 outline-none focus:border-teal-500 transition-all duration-200"
+                    />
+                  </div>
+
+                  {/* Filter selector */}
+                  <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+                    <button
+                      onClick={() => setStatusFilter("all")}
+                      className={`text-xs px-3 py-1.5 rounded-lg transition-all duration-150 font-medium ${
+                        statusFilter === "all" ? "bg-slate-800 text-teal-400" : "text-slate-400 hover:text-slate-300"
+                      }`}
+                    >
+                      {lang === "si" ? "සියල්ල" : "All"} ({matchingData.matchedList.length})
+                    </button>
+                    <button
+                      onClick={() => setStatusFilter("matched")}
+                      className={`text-xs px-3 py-1.5 rounded-lg transition-all duration-150 font-medium ${
+                        statusFilter === "matched" ? "bg-slate-800 text-emerald-400" : "text-slate-400 hover:text-slate-300"
+                      }`}
+                    >
+                      {lang === "si" ? "ගැලපෙන" : "Matched"} ({matchingData.stats.matched})
+                    </button>
+                    <button
+                      onClick={() => setStatusFilter("unmatched_zip")}
+                      className={`text-xs px-3 py-1.5 rounded-lg transition-all duration-150 font-medium ${
+                        statusFilter === "unmatched_zip" ? "bg-slate-800 text-amber-400" : "text-slate-400 hover:text-slate-300"
+                      }`}
+                    >
+                      {lang === "si" ? "නොගැලපෙන" : "Unmatched"} ({matchingData.stats.unmatchedZip})
+                    </button>
+                  </div>
+
+                </div>
+
+              </div>
+
+              {/* Table */}
+              <div className="overflow-x-auto">
+                {filteredList.length === 0 ? (
+                  <div className="p-8 text-center flex flex-col items-center">
+                    <AlertCircle className="h-8 w-8 text-slate-600 mb-2" />
+                    <span className="text-sm text-slate-400 font-medium">
+                      {lang === "si" ? "කිසිදු ප්‍රතිඵලයක් සොයාගත නොහැක" : "No results match the current filters"}
+                    </span>
+                  </div>
+                ) : (
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-950/40 text-slate-400 font-bold border-b border-slate-800">
+                        <th className="py-3 px-6">{lang === "si" ? "මුල් PDF ගොනු නම (ZIP)" : "Original Filename (ZIP)"}</th>
+                        <th className="py-3 px-6">{lang === "si" ? "හඳුනාගත් NIC" : "Extracted NIC Key"}</th>
+                        <th className="py-3 px-6" />
+                        <th className="py-3 px-6">{lang === "si" ? "නව ගොනු නම (Employee No)" : "Target Filename (Employee No)"}</th>
+                        <th className="py-3 px-6 text-center">{lang === "si" ? "තත්ත්වය" : "Status"}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-850">
+                      {filteredList.map((item, idx) => (
+                        <tr key={idx} className="hover:bg-slate-900/30 transition-all duration-150">
+                          
+                          {/* Original PDF Name */}
+                          <td className="py-3 px-6 font-mono text-slate-300 truncate max-w-[200px]" title={item.originalName}>
+                            {item.originalName}
+                          </td>
+
+                          {/* Extracted NIC */}
+                          <td className="py-3 px-6 font-mono">
+                            {item.nicKey ? (
+                              <span className="text-slate-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                                {item.nicKey}
+                              </span>
+                            ) : (
+                              <span className="text-slate-500 italic">None</span>
+                            )}
+                          </td>
+
+                          {/* Arrow pointer */}
+                          <td className="py-3 px-6 text-slate-500">
+                            <ArrowRight className="h-3.5 w-3.5" />
+                          </td>
+
+                          {/* Target Renamed Name */}
+                          <td className="py-3 px-6 font-mono">
+                            {item.status === "matched" && item.empNo ? (
+                              <span className="text-emerald-400 font-bold">
+                                {item.empNo}{filenameSuffix}.pdf
+                              </span>
+                            ) : includeUnmatched && item.status !== "matched" ? (
+                              <span className="text-slate-400 italic">
+                                {item.originalName}
+                              </span>
+                            ) : (
+                              <span className="text-rose-400/80 line-through">
+                                (Excluded)
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Status Badge */}
+                          <td className="py-3 px-6">
+                            <div className="flex items-center justify-center">
+                              {item.status === "matched" ? (
+                                <span className="bg-emerald-500/10 text-emerald-400 px-2.5 py-1 rounded-full border border-emerald-500/20 font-semibold text-[10px] flex items-center gap-1.5">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                                  {lang === "si" ? "සාර්ථකයි" : "Matched"}
+                                </span>
+                              ) : item.status === "unmatched_zip" ? (
+                                <span 
+                                  className="bg-amber-500/10 text-amber-400 px-2.5 py-1 rounded-full border border-amber-500/20 font-semibold text-[10px] flex items-center gap-1.5 cursor-help"
+                                  title={item.details}
+                                >
+                                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                                  {lang === "si" ? "Excel හි නැත" : "No match"}
+                                </span>
+                              ) : (
+                                <span 
+                                  className="bg-rose-500/10 text-rose-400 px-2.5 py-1 rounded-full border border-rose-500/20 font-semibold text-[10px] flex items-center gap-1.5 cursor-help"
+                                  title={item.details}
+                                >
+                                  <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+                                  {lang === "si" ? "අනුපිටපතක්" : "Duplicate"}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* Extra Unmatched Excel rows section if any */}
+              {matchingData.unmatchedExcelList.length > 0 && (
+                <div className="bg-slate-950/60 p-6 border-t border-slate-800">
+                  <div className="flex items-center gap-2 text-cyan-400 mb-3">
+                    <AlertTriangle className="h-4 w-4" />
+                    <span className="text-xs font-bold uppercase tracking-wider">
+                      {lang === "si" 
+                        ? `ZIP එක තුල PDF ගොනු නොමැති සේවකයින් (${matchingData.unmatchedExcelList.length})` 
+                        : `Employees listed in Excel but missing in ZIP (${matchingData.unmatchedExcelList.length})`
+                      }
+                    </span>
+                  </div>
+                  <div className="max-h-36 overflow-y-auto border border-slate-850 rounded-xl divide-y divide-slate-850">
+                    {matchingData.unmatchedExcelList.map((rowItem, idx) => (
+                      <div key={idx} className="p-2.5 flex items-center justify-between text-[11px] font-mono hover:bg-slate-900/40">
+                        <span className="text-slate-400">
+                          {lang === "si" ? "පේළිය" : "Row"} #{rowItem.rowNumber}
+                        </span>
+                        <div className="flex items-center gap-4">
+                          <span className="text-slate-300">
+                            NIC: <strong className="text-slate-100">{rowItem.nic}</strong>
+                          </span>
+                          <span className="text-slate-500">|</span>
+                          <span className="text-cyan-400 font-bold">
+                            EMP Code: {rowItem.empNo}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </div>
+
+          </div>
+        )}
+
       </main>
+
+      {/* Premium Footer */}
+      <footer className="mt-auto border-t border-slate-800/80 bg-slate-950 py-8 relative z-10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-4 text-center md:text-left">
+          <div>
+            <p className="text-xs text-slate-400 font-light">
+              &copy; 2026 ZIP Rename Nexus. Built for lightning-fast locally processed PDF relabeling.
+            </p>
+            <p className="text-[10px] text-slate-600 mt-1">
+              Developed using Next.js 16, SheetJS, JSZip & Tailwind CSS v4. No files are uploaded to any server.
+            </p>
+          </div>
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-1.5 text-xs text-slate-400">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 inline-block animate-ping" />
+              <span>{lang === "si" ? "දේශීයව ක්‍රියාත්මකයි" : "Running locally"}</span>
+            </div>
+            <a 
+              href="https://github.com" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+            >
+              Documentation
+            </a>
+          </div>
+        </div>
+      </footer>
+
     </div>
   );
 }
