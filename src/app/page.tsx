@@ -35,6 +35,8 @@ interface MatchResult {
   nicKey: string;
   empNo: string | null;
   status: "matched" | "unmatched_zip" | "duplicate_nic" | "duplicate_emp";
+  matchType?: "exact" | "substring" | "fuzzy" | "none";
+  matchScore?: number;
   details?: string;
 }
 
@@ -68,7 +70,7 @@ export default function Home() {
   const [statusFilter, setStatusFilter] = useState<"all" | "matched" | "unmatched_zip" | "unmatched_excel">("all");
   
   // Renaming Settings
-  const [includeUnmatched, setIncludeUnmatched] = useState(false);
+  const [includeUnmatched, setIncludeUnmatched] = useState(true);
   const [filenameSuffix, setFilenameSuffix] = useState("");
   const [outputZipName, setOutputZipName] = useState("renamed_pdfs.zip");
   
@@ -86,6 +88,33 @@ export default function Home() {
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9]/g, ""); // keep only alphanumeric characters
+  };
+
+  // Helper to calculate Levenshtein distance for fuzzy matching
+  const getLevenshteinDistance = (a: string, b: string): number => {
+    const matrix: number[][] = [];
+    for (let i = 0; i <= b.length; i++) {
+      matrix[i] = [i];
+    }
+    for (let j = 0; j <= a.length; j++) {
+      matrix[0][j] = j;
+    }
+    for (let i = 1; i <= b.length; i++) {
+      for (let j = 1; j <= a.length; j++) {
+        if (b.charAt(i - 1) === a.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1, // substitution
+            Math.min(
+              matrix[i][j - 1] + 1, // insertion
+              matrix[i - 1][j] + 1  // deletion
+            )
+          );
+        }
+      }
+    }
+    return matrix[b.length][a.length];
   };
 
   // Extract NIC key from a filename (removes path, extension, and standardizes)
@@ -314,9 +343,8 @@ export default function Home() {
   const matchingData = useMemo(() => {
     if (!nicColumn || !empColumn) return { matchedList: [], unmatchedExcelList: [], stats: { matched: 0, unmatchedZip: 0, unmatchedExcel: 0, totalZip: 0 } };
 
-    // 1. Create a Map of NIC -> Employee Number from Excel Data
-    const excelMap = new Map<string, { empNo: string; row: ExcelRow; matched: boolean; rowIdx: number }>();
-    const duplicateExcelNics = new Set<string>();
+    // 1. Extract and normalize Excel data into an array of entries
+    const excelEntries: { normalizedNic: string; empNo: string; row: ExcelRow; rowIdx: number; originalNic: string; matched: boolean }[] = [];
 
     excelData.forEach((row, index) => {
       const rawNic = row[nicColumn];
@@ -326,22 +354,20 @@ export default function Home() {
         const nicKey = normalizeNIC(rawNic);
         const empNo = String(rawEmp).trim();
         
-        if (excelMap.has(nicKey)) {
-          duplicateExcelNics.add(nicKey);
-        } else {
-          excelMap.set(nicKey, {
-            empNo: empNo,
-            row: row,
-            matched: false,
-            rowIdx: index + 2 // 1-indexed + header row
-          });
-        }
+        excelEntries.push({
+          normalizedNic: nicKey,
+          empNo: empNo,
+          row: row,
+          rowIdx: index + 2, // 1-indexed + header row
+          originalNic: String(rawNic).trim(),
+          matched: false
+        });
       }
     });
 
-    // 2. Map ZIP Files
+    // 2. Map ZIP Files using multi-tier smart match (Exact, Sub-string/Digits, Fuzzy)
     const matchedList: MatchResult[] = [];
-    const zipNicsSeen = new Set<string>();
+    const matchedExcelNicsSeen = new Set<string>();
     const empNosUsed = new Set<string>();
 
     zipFileList.forEach((zipFileItem) => {
@@ -354,47 +380,120 @@ export default function Home() {
           nicKey: "",
           empNo: null,
           status: "unmatched_zip",
+          matchType: "none",
           details: "ගොනු නාමයෙන් NIC එකක් හඳුනාගත නොහැක / Cannot extract NIC from filename"
         });
         return;
       }
 
-      if (zipNicsSeen.has(nicKey)) {
-        matchedList.push({
-          originalName: zipFileItem.name,
-          originalPath: zipFileItem.path,
-          nicKey: nicKey,
-          empNo: null,
-          status: "duplicate_nic",
-          details: `ZIP එක තුල මෙම NIC එක (${nicKey}) දෙවතාවක් පවතී / Duplicate NIC inside ZIP`
+      // Try to find the best match for this ZIP file
+      let bestMatch: typeof excelEntries[0] | null = null;
+      let matchType: "exact" | "substring" | "fuzzy" | "none" = "none";
+      let matchScore = 0;
+
+      // Stage 1: Exact Match
+      const exactMatch = excelEntries.find((e) => e.normalizedNic === nicKey);
+      if (exactMatch) {
+        bestMatch = exactMatch;
+        matchType = "exact";
+      } else {
+        // Stage 2: Sub-string & Digit-only Match
+        const substringMatches = excelEntries.filter((e) => {
+          const eNic = e.normalizedNic;
+          const zNic = nicKey;
+
+          // Standard substring contains
+          if (eNic.length >= 5 && zNic.length >= 5) {
+            if (zNic.includes(eNic) || eNic.includes(zNic)) {
+              return true;
+            }
+          }
+
+          // Digit-only comparison (handles missing 'V' or extra characters)
+          const eDigits = eNic.replace(/[^0-9]/g, "");
+          const zDigits = zNic.replace(/[^0-9]/g, "");
+          if (eDigits.length >= 7 && zDigits.length >= 7) {
+            if (eDigits === zDigits || zDigits.includes(eDigits) || eDigits.includes(zDigits)) {
+              return true;
+            }
+          }
+
+          return false;
         });
-        return;
+
+        if (substringMatches.length > 0) {
+          // Pick the one with closest length
+          substringMatches.sort((a, b) => Math.abs(a.normalizedNic.length - nicKey.length) - Math.abs(b.normalizedNic.length - nicKey.length));
+          bestMatch = substringMatches[0];
+          matchType = "substring";
+        } else {
+          // Stage 3: Fuzzy Match (Levenshtein Distance <= 3)
+          let minDistance = 999;
+          let bestFuzzy: typeof excelEntries[0] | null = null;
+
+          excelEntries.forEach((e) => {
+            if (e.normalizedNic.length >= 5 && nicKey.length >= 5) {
+              const distance = getLevenshteinDistance(nicKey, e.normalizedNic);
+              if (distance < minDistance) {
+                minDistance = distance;
+                bestFuzzy = e;
+              }
+            }
+          });
+
+          if (bestFuzzy && minDistance <= 3) {
+            bestMatch = bestFuzzy;
+            matchType = "fuzzy";
+            matchScore = minDistance;
+          }
+        }
       }
-      
-      zipNicsSeen.add(nicKey);
 
-      const excelMatch = excelMap.get(nicKey);
-      if (excelMatch) {
-        const targetEmpNo = excelMatch.empNo;
-        excelMatch.matched = true; // Mark as matched
+      // Check duplicates & finalize status
+      if (bestMatch) {
+        const targetEmpNo = bestMatch.empNo;
+        const targetNic = bestMatch.normalizedNic;
+        bestMatch.matched = true; // Mark as matched
 
-        if (empNosUsed.has(targetEmpNo)) {
+        if (matchedExcelNicsSeen.has(targetNic)) {
+          matchedList.push({
+            originalName: zipFileItem.name,
+            originalPath: zipFileItem.path,
+            nicKey: nicKey,
+            empNo: targetEmpNo,
+            status: "duplicate_nic",
+            matchType: matchType,
+            matchScore: matchScore,
+            details: `Excel පේළිය (${bestMatch.originalNic}) දැනටමත් වෙනත් ගොනුවකට ගළපා ඇත / Excel row already matched`
+          });
+        } else if (empNosUsed.has(targetEmpNo)) {
+          matchedExcelNicsSeen.add(targetNic);
           matchedList.push({
             originalName: zipFileItem.name,
             originalPath: zipFileItem.path,
             nicKey: nicKey,
             empNo: targetEmpNo,
             status: "duplicate_emp",
+            matchType: matchType,
+            matchScore: matchScore,
             details: `Employee Number (${targetEmpNo}) දැනටමත් වෙනත් NIC එකකට භාවිතා කර ඇත / Employee No already used`
           });
         } else {
+          matchedExcelNicsSeen.add(targetNic);
           empNosUsed.add(targetEmpNo);
           matchedList.push({
             originalName: zipFileItem.name,
             originalPath: zipFileItem.path,
             nicKey: nicKey,
             empNo: targetEmpNo,
-            status: "matched"
+            status: "matched",
+            matchType: matchType,
+            matchScore: matchScore,
+            details: matchType === "exact"
+              ? "100% ගැලපේ (Exact Match)"
+              : matchType === "substring"
+                ? `පූර්ණ නොවන ගැලපීම (Partial Match: ${bestMatch.originalNic})`
+                : `සැක සහිත ගැලපීම (Fuzzy Match: ${bestMatch.originalNic}, වෙනස: ${matchScore})`
           });
         }
       } else {
@@ -404,17 +503,18 @@ export default function Home() {
           nicKey: nicKey,
           empNo: null,
           status: "unmatched_zip",
-          details: "Excel පත්‍රයේ මෙම NIC එක හමුනොවිය / NIC not found in Excel"
+          matchType: "none",
+          details: "Excel පත්‍රයේ ගැලපෙන අගයක් හමුනොවිය / No match found in Excel"
         });
       }
     });
 
     // 3. Find unmatched Excel Rows
     const unmatchedExcelList: UnmatchedExcelRow[] = [];
-    excelMap.forEach((val, key) => {
+    excelEntries.forEach((val) => {
       if (!val.matched) {
         unmatchedExcelList.push({
-          nic: key,
+          nic: val.normalizedNic,
           empNo: val.empNo,
           rowNumber: val.rowIdx,
           originalRow: val.row
@@ -459,8 +559,8 @@ export default function Home() {
 
   // Generate Renamed ZIP File
   const handleRenameAndDownload = async () => {
-    if (!zipInstance || matchingData.stats.matched === 0) {
-      alert("පරිවර්තනය කිරීමට ගැලපෙන ගොනු නොමැත. / No matching files to rename.");
+    if (!zipInstance || (matchingData.stats.matched === 0 && !includeUnmatched)) {
+      alert("බාගත කිරීමට ගොනු නොමැත. / No files to download.");
       return;
     }
 
@@ -1191,18 +1291,16 @@ export default function Home() {
 
                 <button
                   onClick={handleRenameAndDownload}
-                  disabled={isProcessing || matchingData.stats.matched === 0}
+                  disabled={isProcessing || zipFileList.length === 0}
                   className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-400 hover:from-teal-400 hover:to-emerald-300 text-slate-950 font-bold text-sm tracking-wide shadow-lg shadow-teal-500/10 hover:shadow-teal-400/20 flex items-center justify-center gap-2.5 transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed hover:-translate-y-0.5 active:translate-y-0 active:scale-98"
                 >
                   <Download className="h-4.5 w-4.5" />
                   {lang === "si" 
-                    ? `පරිවර්තනය කර බාගන්න (ගොනු ${matchingData.stats.matched})` 
-                    : `Rename & Download ZIP (${matchingData.stats.matched} files)`
+                    ? `පරිවර්තනය කර බාගන්න (ගොනු ${includeUnmatched ? zipFileList.length : matchingData.stats.matched} ක්)` 
+                    : `Rename & Download ZIP (${includeUnmatched ? zipFileList.length : matchingData.stats.matched} files)`
                   }
                 </button>
-
               </div>
-
             </div>
 
             {/* Renaming Preview & List Panel */}
@@ -1333,17 +1431,38 @@ export default function Home() {
                           <td className="py-3 px-6">
                             <div className="flex items-center justify-center">
                               {item.status === "matched" ? (
-                                <span className="bg-emerald-500/10 text-emerald-400 px-2.5 py-1 rounded-full border border-emerald-500/20 font-semibold text-[10px] flex items-center gap-1.5">
-                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                                  {lang === "si" ? "සාර්ථකයි" : "Matched"}
-                                </span>
+                                item.matchType === "exact" ? (
+                                  <span 
+                                    className="bg-emerald-500/10 text-emerald-400 px-2.5 py-1 rounded-full border border-emerald-500/20 font-semibold text-[10px] flex items-center gap-1.5 cursor-help"
+                                    title={item.details}
+                                  >
+                                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                                    {lang === "si" ? "100% ගැලපේ" : "Exact Match"}
+                                  </span>
+                                ) : item.matchType === "substring" ? (
+                                  <span 
+                                    className="bg-teal-500/10 text-teal-400 px-2.5 py-1 rounded-full border border-teal-500/20 font-semibold text-[10px] flex items-center gap-1.5 cursor-help"
+                                    title={item.details}
+                                  >
+                                    <span className="h-1.5 w-1.5 rounded-full bg-teal-400" />
+                                    {lang === "si" ? "කොටසක් ගැලපේ" : "Partial Match"}
+                                  </span>
+                                ) : (
+                                  <span 
+                                    className="bg-cyan-500/10 text-cyan-400 px-2.5 py-1 rounded-full border border-cyan-500/20 font-semibold text-[10px] flex items-center gap-1.5 cursor-help"
+                                    title={item.details}
+                                  >
+                                    <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+                                    {lang === "si" ? `සැක සහිත (${item.matchScore})` : `Fuzzy Match (${item.matchScore})`}
+                                  </span>
+                                )
                               ) : item.status === "unmatched_zip" ? (
                                 <span 
-                                  className="bg-amber-500/10 text-amber-400 px-2.5 py-1 rounded-full border border-amber-500/20 font-semibold text-[10px] flex items-center gap-1.5 cursor-help"
+                                  className="bg-slate-500/10 text-slate-400 px-2.5 py-1 rounded-full border border-slate-500/20 font-semibold text-[10px] flex items-center gap-1.5 cursor-help"
                                   title={item.details}
                                 >
-                                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-                                  {lang === "si" ? "Excel හි නැත" : "No match"}
+                                  <span className="h-1.5 w-1.5 rounded-full bg-slate-500" />
+                                  {lang === "si" ? "නොගැලපේ (මුල් නම)" : "No match (Kept)"}
                                 </span>
                               ) : (
                                 <span 
