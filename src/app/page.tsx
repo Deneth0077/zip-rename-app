@@ -71,6 +71,7 @@ export default function Home() {
   const [progress, setProgress] = useState(0);
   const [progressText, setProgressText] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [filterType, setFilterType] = useState<"all" | "nic" | "emp" | "name">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "matched" | "unmatched_zip" | "unmatched_excel">("all");
   
   // Renaming Settings
@@ -640,16 +641,24 @@ export default function Home() {
 
     if (searchQuery.trim() !== "") {
       const q = searchQuery.toLowerCase();
-      items = items.filter(
-        (m) =>
-          m.originalName.toLowerCase().includes(q) ||
-          m.nicKey.toLowerCase().includes(q) ||
-          (m.empNo && m.empNo.toLowerCase().includes(q))
-      );
+      const normQ = normalizeNIC(q);
+      items = items.filter((m) => {
+        const matchesNic = m.nicKey.toLowerCase().includes(q) || (normQ && m.nicKey.toLowerCase().includes(normQ));
+        const matchesEmp = m.empNo ? m.empNo.toLowerCase().includes(q) : false;
+        const matchesName = m.name ? m.name.toLowerCase().includes(q) : false;
+        const matchesOrigName = m.originalName.toLowerCase().includes(q);
+
+        if (filterType === "nic") return matchesNic;
+        if (filterType === "emp") return matchesEmp;
+        if (filterType === "name") return matchesName;
+        
+        // "all"
+        return matchesNic || matchesEmp || matchesName || matchesOrigName;
+      });
     }
 
     return items;
-  }, [matchingData, statusFilter, searchQuery]);
+  }, [matchingData, statusFilter, searchQuery, filterType]);
 
   // Send renamed PDF file to WhatsApp
   const handleSendWhatsApp = async (item: MatchResult) => {
@@ -683,27 +692,11 @@ export default function Home() {
       // Extract binary data of PDF
       const content = await origZipFile.fileObj.async("uint8array");
       const blob = new Blob([content as any], { type: "application/pdf" });
-      const file = new File([blob], fileName, { type: "application/pdf" });
       
-      const messageText = `Hi ${item.name || "Customer"}, here is your document (${fileName}).`;
-
       setProgress(70);
       setProgressText("WhatsApp සම්බන්ධ කරමින්... / Directing to WhatsApp...");
 
-      // Try Web Share API first (e.g. mobile)
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({
-          files: [file],
-          title: fileName,
-          text: messageText,
-        });
-        setIsProcessing(false);
-        setProgress(0);
-        setProgressText("");
-        return;
-      }
-      
-      // Fallback for Desktop: Download file locally and open WhatsApp Web/App
+      // Download file locally
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
       link.download = fileName;
@@ -711,10 +704,10 @@ export default function Home() {
       link.click();
       document.body.removeChild(link);
       
-      // Open WhatsApp URL
-      const whatsappText = `Hello ${item.name || ""},\n\nPlease find your document attached.\n\n*(Note: The document has been downloaded to your device as '${fileName}'. Please attach/drag it into this chat.)*`;
-      const whatsappUrl = `https://api.whatsapp.com/send?phone=${formattedPhone}&text=${encodeURIComponent(whatsappText)}`;
-      window.open(whatsappUrl, "_blank");
+      // Open WhatsApp Desktop App directly using the custom whatsapp:// URI scheme!
+      const whatsappText = `Hello ${item.name || ""},\n\nPlease find your document attached.\n\n*(Note: The document has been downloaded as '${fileName}'. Please attach/drag it into this chat.)*`;
+      const whatsappUrl = `whatsapp://send?phone=${formattedPhone}&text=${encodeURIComponent(whatsappText)}`;
+      window.location.href = whatsappUrl;
       
       setProgress(100);
       setTimeout(() => {
@@ -1539,12 +1532,32 @@ export default function Home() {
                 {/* Filter and search controls */}
                 <div className="flex flex-wrap items-center gap-3">
                   
+                  {/* Search Field Filter Selector */}
+                  <select
+                    value={filterType}
+                    onChange={(e) => setFilterType(e.target.value as any)}
+                    className="bg-slate-950 border border-slate-800 hover:border-slate-700/80 rounded-xl px-3 py-2.5 text-xs text-slate-300 font-medium outline-none focus:border-teal-500 transition-all duration-200 cursor-pointer"
+                  >
+                    <option value="all">{lang === "si" ? "සියල්ල (All)" : "All Fields"}</option>
+                    <option value="nic">{lang === "si" ? "NIC අංකයෙන් පමණි" : "NIC Only"}</option>
+                    <option value="emp">{lang === "si" ? "සේවක අංකයෙන් (EMP)" : "Employee ID Only"}</option>
+                    <option value="name">{lang === "si" ? "නමින් පමණි" : "Name Only"}</option>
+                  </select>
+
                   {/* Search Bar */}
                   <div className="relative max-w-xs w-full">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-500" />
                     <input
                       type="text"
-                      placeholder={lang === "si" ? "සොයන්න (NIC/EMP)..." : "Search files..."}
+                      placeholder={
+                        filterType === "nic" 
+                          ? (lang === "si" ? "NIC අංකය සොයන්න..." : "Search by NIC...")
+                          : filterType === "emp"
+                            ? (lang === "si" ? "සේවක අංකය සොයන්න..." : "Search by Employee ID...")
+                            : filterType === "name"
+                              ? (lang === "si" ? "නම සොයන්න..." : "Search by Name...")
+                              : (lang === "si" ? "සොයන්න (NIC/EMP/නම)..." : "Search files...")
+                      }
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       className="bg-slate-950 border border-slate-800 hover:border-slate-700/80 rounded-xl pl-9 pr-4 py-2 text-xs text-slate-200 outline-none focus:border-teal-500 transition-all duration-200"
