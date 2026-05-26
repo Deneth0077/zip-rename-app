@@ -34,6 +34,8 @@ interface MatchResult {
   originalPath: string;
   nicKey: string;
   empNo: string | null;
+  name: string | null;
+  phone: string | null;
   status: "matched" | "unmatched_zip" | "duplicate_nic" | "duplicate_emp";
   matchType?: "exact" | "substring" | "fuzzy" | "none";
   matchScore?: number;
@@ -57,6 +59,8 @@ export default function Home() {
   const [headers, setHeaders] = useState<string[]>([]);
   const [nicColumn, setNicColumn] = useState<string>("");
   const [empColumn, setEmpColumn] = useState<string>("");
+  const [nameColumn, setNameColumn] = useState<string>("");
+  const [phoneColumn, setPhoneColumn] = useState<string>("");
   
   // ZIP State
   const [zipInstance, setZipInstance] = useState<JSZip | null>(null);
@@ -88,6 +92,20 @@ export default function Home() {
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9]/g, ""); // keep only alphanumeric characters
+  };
+
+  // Helper to format phone number for WhatsApp API
+  const formatPhoneForWhatsApp = (phone: any): string => {
+    if (phone === undefined || phone === null) return "";
+    let clean = String(phone).replace(/[^0-9]/g, ""); // Keep digits only
+    
+    // Sri Lankan number format (local 07xxxxxxxx -> international 947xxxxxxxx)
+    if (clean.startsWith("0") && clean.length === 10) {
+      clean = "94" + clean.substring(1);
+    } else if (clean.length === 9 && clean.startsWith("7")) {
+      clean = "94" + clean;
+    }
+    return clean;
   };
 
   // Helper to calculate Levenshtein distance for fuzzy matching
@@ -135,6 +153,8 @@ export default function Home() {
     setHeaders([]);
     setNicColumn("");
     setEmpColumn("");
+    setNameColumn("");
+    setPhoneColumn("");
   };
 
   // Reset ZIP State
@@ -189,12 +209,16 @@ export default function Home() {
     const extractedHeaders = Object.keys(rows[0]);
     setHeaders(extractedHeaders);
 
-    // Auto-detect columns (NIC & Employee No)
+    // Auto-detect columns (NIC, Employee No, Name, Phone)
     let autoNic = "";
     let autoEmp = "";
+    let autoName = "";
+    let autoPhone = "";
 
     const nicKeywords = ["nic", "identity", "id", "හඳුනුම්පත්", "ජා.හැ.", "card"];
     const empKeywords = ["emp", "employee", "member", "නොම්මර", "අංකය", "id", "code", "no"];
+    const nameKeywords = ["name", "nama", "නම", "සේවක නම", "employee name", "emp name", "full name"];
+    const phoneKeywords = ["phone", "mobile", "contact", "tel", "telephone", "දුරකථන", "whatsapp", "no", "number", "contact no"];
 
     // First try exact matches, then keyword contains
     for (const header of extractedHeaders) {
@@ -221,6 +245,35 @@ export default function Home() {
           autoEmp = header;
         }
       }
+
+      // Look for Name
+      if (!autoName) {
+        if (
+          lowerHeader === "name" ||
+          lowerHeader === "employee name" ||
+          lowerHeader === "emp name" ||
+          lowerHeader === "nama"
+        ) {
+          autoName = header;
+        }
+      }
+
+      // Look for Phone
+      if (!autoPhone) {
+        if (
+          lowerHeader === "phone" ||
+          lowerHeader === "phone no" ||
+          lowerHeader === "phone number" ||
+          lowerHeader === "mobile" ||
+          lowerHeader === "mobile no" ||
+          lowerHeader === "mobile number" ||
+          lowerHeader === "whatsapp" ||
+          lowerHeader === "contact" ||
+          lowerHeader === "contact no"
+        ) {
+          autoPhone = header;
+        }
+      }
     }
 
     // Fuzzy matching if not found
@@ -236,9 +289,23 @@ export default function Home() {
       ) || "";
     }
 
+    if (!autoName) {
+      autoName = extractedHeaders.find(h => 
+        nameKeywords.some(keyword => h.toLowerCase().includes(keyword)) && h !== autoNic && h !== autoEmp
+      ) || "";
+    }
+
+    if (!autoPhone) {
+      autoPhone = extractedHeaders.find(h => 
+        phoneKeywords.some(keyword => h.toLowerCase().includes(keyword)) && h !== autoNic && h !== autoEmp && h !== autoName
+      ) || "";
+    }
+
     // Fallbacks
     setNicColumn(autoNic || extractedHeaders[0] || "");
     setEmpColumn(autoEmp || (extractedHeaders[1] !== autoNic ? extractedHeaders[1] : extractedHeaders[0]) || "");
+    setNameColumn(autoName || extractedHeaders.find(h => h !== autoNic && h !== autoEmp) || "");
+    setPhoneColumn(autoPhone || extractedHeaders.find(h => h !== autoNic && h !== autoEmp && h !== autoName) || "");
   };
 
   // Handle Sheet Change
@@ -344,19 +411,34 @@ export default function Home() {
     if (!nicColumn || !empColumn) return { matchedList: [], unmatchedExcelList: [], stats: { matched: 0, unmatchedZip: 0, unmatchedExcel: 0, totalZip: 0 } };
 
     // 1. Extract and normalize Excel data into an array of entries
-    const excelEntries: { normalizedNic: string; empNo: string; row: ExcelRow; rowIdx: number; originalNic: string; matched: boolean }[] = [];
+    const excelEntries: { 
+      normalizedNic: string; 
+      empNo: string; 
+      name: string; 
+      phone: string; 
+      row: ExcelRow; 
+      rowIdx: number; 
+      originalNic: string; 
+      matched: boolean 
+    }[] = [];
 
     excelData.forEach((row, index) => {
       const rawNic = row[nicColumn];
       const rawEmp = row[empColumn];
+      const rawName = nameColumn ? row[nameColumn] : "";
+      const rawPhone = phoneColumn ? row[phoneColumn] : "";
       
       if (rawNic !== undefined && rawNic !== null && String(rawNic).trim() !== "") {
         const nicKey = normalizeNIC(rawNic);
         const empNo = String(rawEmp).trim();
+        const name = String(rawName).trim();
+        const phone = String(rawPhone).trim();
         
         excelEntries.push({
           normalizedNic: nicKey,
           empNo: empNo,
+          name: name,
+          phone: phone,
           row: row,
           rowIdx: index + 2, // 1-indexed + header row
           originalNic: String(rawNic).trim(),
@@ -379,6 +461,8 @@ export default function Home() {
           originalPath: zipFileItem.path,
           nicKey: "",
           empNo: null,
+          name: null,
+          phone: null,
           status: "unmatched_zip",
           matchType: "none",
           details: "ගොනු නාමයෙන් NIC එකක් හඳුනාගත නොහැක / Cannot extract NIC from filename"
@@ -453,6 +537,8 @@ export default function Home() {
       if (bestMatch) {
         const targetEmpNo = bestMatch.empNo;
         const targetNic = bestMatch.normalizedNic;
+        const targetName = bestMatch.name;
+        const targetPhone = bestMatch.phone;
         bestMatch.matched = true; // Mark as matched
 
         if (matchedExcelNicsSeen.has(targetNic)) {
@@ -461,6 +547,8 @@ export default function Home() {
             originalPath: zipFileItem.path,
             nicKey: nicKey,
             empNo: targetEmpNo,
+            name: targetName,
+            phone: targetPhone,
             status: "duplicate_nic",
             matchType: matchType,
             matchScore: matchScore,
@@ -473,6 +561,8 @@ export default function Home() {
             originalPath: zipFileItem.path,
             nicKey: nicKey,
             empNo: targetEmpNo,
+            name: targetName,
+            phone: targetPhone,
             status: "duplicate_emp",
             matchType: matchType,
             matchScore: matchScore,
@@ -486,6 +576,8 @@ export default function Home() {
             originalPath: zipFileItem.path,
             nicKey: nicKey,
             empNo: targetEmpNo,
+            name: targetName,
+            phone: targetPhone,
             status: "matched",
             matchType: matchType,
             matchScore: matchScore,
@@ -502,6 +594,8 @@ export default function Home() {
           originalPath: zipFileItem.path,
           nicKey: nicKey,
           empNo: null,
+          name: null,
+          phone: null,
           status: "unmatched_zip",
           matchType: "none",
           details: "Excel පත්‍රයේ ගැලපෙන අගයක් හමුනොවිය / No match found in Excel"
@@ -531,7 +625,7 @@ export default function Home() {
     };
 
     return { matchedList, unmatchedExcelList, stats };
-  }, [excelData, zipFileList, nicColumn, empColumn]);
+  }, [excelData, zipFileList, nicColumn, empColumn, nameColumn, phoneColumn]);
 
   // Filtered lists for rendering preview
   const filteredList = useMemo(() => {
@@ -556,6 +650,86 @@ export default function Home() {
 
     return items;
   }, [matchingData, statusFilter, searchQuery]);
+
+  // Send renamed PDF file to WhatsApp
+  const handleSendWhatsApp = async (item: MatchResult) => {
+    if (!item.phone) {
+      alert("දුරකථන අංකයක් හමු නොවුණි. / Phone number not found.");
+      return;
+    }
+
+    const formattedPhone = formatPhoneForWhatsApp(item.phone);
+    if (!formattedPhone) {
+      alert("දුරකථන අංකය වැරදි ආකෘතියක පවතී. / Invalid phone number format.");
+      return;
+    }
+
+    const fileName = item.empNo 
+      ? `${item.empNo} (${item.nicKey.toUpperCase()})${filenameSuffix}.pdf` 
+      : `${item.nicKey.toUpperCase()}${filenameSuffix}.pdf`;
+    
+    // Find JSZipObject
+    const origZipFile = zipFileList.find((f) => f.path === item.originalPath);
+    if (!origZipFile) {
+      alert("අදාළ PDF ගොනුව ZIP එකෙහි හමු නොවුණි. / File not found in ZIP archive.");
+      return;
+    }
+
+    setIsProcessing(true);
+    setProgress(30);
+    setProgressText(`ගොනුව සකසමින්: ${fileName}... / Extracting file: ${fileName}...`);
+
+    try {
+      // Extract binary data of PDF
+      const content = await origZipFile.fileObj.async("uint8array");
+      const blob = new Blob([content as any], { type: "application/pdf" });
+      const file = new File([blob], fileName, { type: "application/pdf" });
+      
+      const messageText = `Hi ${item.name || "Customer"}, here is your document (${fileName}).`;
+
+      setProgress(70);
+      setProgressText("WhatsApp සම්බන්ධ කරමින්... / Directing to WhatsApp...");
+
+      // Try Web Share API first (e.g. mobile)
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: fileName,
+          text: messageText,
+        });
+        setIsProcessing(false);
+        setProgress(0);
+        setProgressText("");
+        return;
+      }
+      
+      // Fallback for Desktop: Download file locally and open WhatsApp Web/App
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      // Open WhatsApp URL
+      const whatsappText = `Hello ${item.name || ""},\n\nPlease find your document attached.\n\n*(Note: The document has been downloaded to your device as '${fileName}'. Please attach/drag it into this chat.)*`;
+      const whatsappUrl = `https://api.whatsapp.com/send?phone=${formattedPhone}&text=${encodeURIComponent(whatsappText)}`;
+      window.open(whatsappUrl, "_blank");
+      
+      setProgress(100);
+      setTimeout(() => {
+        setIsProcessing(false);
+        setProgress(0);
+        setProgressText("");
+      }, 1000);
+      
+    } catch (err) {
+      alert("WhatsApp හරහා යැවීමේදී දෝෂයක් ඇති විය / Error sharing via WhatsApp: " + (err as Error).message);
+      setIsProcessing(false);
+      setProgress(0);
+      setProgressText("");
+    }
+  };
 
   // Generate Renamed ZIP File
   const handleRenameAndDownload = async () => {
@@ -586,11 +760,11 @@ export default function Home() {
         const isMatched = item.status === "matched";
 
         if (isMatched && item.empNo) {
-          setProgressText(`පරිවර්තනය කරමින්: ${item.originalName} -> ${item.empNo}${filenameSuffix}.pdf`);
+          const newName = `${item.empNo} (${item.nicKey.toUpperCase()})${filenameSuffix}.pdf`;
+          setProgressText(`පරිවර්තනය කරමින්: ${item.originalName} -> ${newName}`);
           
           // Get PDF Blob or Uint8Array
           const content = await origZipFile.fileObj.async("uint8array");
-          const newName = `${item.empNo}${filenameSuffix}.pdf`;
           
           // Add to new zip
           newZip.file(newName, content);
@@ -650,11 +824,11 @@ export default function Home() {
     try {
       // 1. Create Demo Excel Data
       const demoData = [
-        { "Employee Name": "Chathura Prasad", "NIC Number": "951234567V", "Employee Number": "EMP-2026-001", "Department": "IT" },
-        { "Employee Name": "Nipuni Silva", "NIC Number": "978564321V", "Employee Number": "EMP-2026-002", "Department": "HR" },
-        { "Employee Name": "Kasun Perera", "NIC Number": "199212345678", "Employee Number": "EMP-2026-003", "Department": "Finance" },
-        { "Employee Name": "Ruwan Fernando", "NIC Number": "908765432V", "Employee Number": "EMP-2026-004", "Department": "Operations" },
-        { "Employee Name": "Sanduni Jayasinghe", "NIC Number": "981230987V", "Employee Number": "EMP-2026-005", "Department": "Marketing" }
+        { "Employee Name": "Chathura Prasad", "NIC Number": "951234567V", "Employee Number": "EMP-2026-001", "Phone Number": "0771234567", "Department": "IT" },
+        { "Employee Name": "Nipuni Silva", "NIC Number": "978564321V", "Employee Number": "EMP-2026-002", "Phone Number": "0785643210", "Department": "HR" },
+        { "Employee Name": "Kasun Perera", "NIC Number": "199212345678", "Employee Number": "EMP-2026-003", "Phone Number": "0712345678", "Department": "Finance" },
+        { "Employee Name": "Ruwan Fernando", "NIC Number": "908765432V", "Employee Number": "EMP-2026-004", "Phone Number": "0768765432", "Department": "Operations" },
+        { "Employee Name": "Sanduni Jayasinghe", "NIC Number": "981230987V", "Employee Number": "EMP-2026-005", "Phone Number": "0771230987", "Department": "Marketing" }
       ];
 
       const worksheet = XLSX.utils.json_to_sheet(demoData);
@@ -957,6 +1131,46 @@ export default function Home() {
                         {lang === "si" ? "නව PDF නාමය ලෙස යොදන අගය" : "Target filename value"}
                       </p>
                     </div>
+
+                    {/* Name Column Mapped */}
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                        {lang === "si" ? "නම තීරුව (Name Column)" : "Name Column"}
+                      </label>
+                      <select
+                        value={nameColumn}
+                        onChange={(e) => setNameColumn(e.target.value)}
+                        className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-medium text-slate-200 outline-none focus:border-teal-500 transition-all duration-200"
+                      >
+                        <option value="" disabled>-- Select Column --</option>
+                        {headers.map((h) => (
+                          <option key={h} value={h}>{h}</option>
+                        ))}
+                      </select>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        {lang === "si" ? "සේවකයාගේ නම සඳහන් තීරුව" : "Employee name column"}
+                      </p>
+                    </div>
+
+                    {/* Phone Column Mapped */}
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                        {lang === "si" ? "දුරකථන අංක තීරුව (Phone Column)" : "Phone Column"}
+                      </label>
+                      <select
+                        value={phoneColumn}
+                        onChange={(e) => setPhoneColumn(e.target.value)}
+                        className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-medium text-slate-200 outline-none focus:border-teal-500 transition-all duration-200"
+                      >
+                        <option value="" disabled>-- Select Column --</option>
+                        {headers.map((h) => (
+                          <option key={h} value={h}>{h}</option>
+                        ))}
+                      </select>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        {lang === "si" ? "WhatsApp පණිවිඩය යවන අංකය" : "WhatsApp recipient phone column"}
+                      </p>
+                    </div>
                   </div>
 
                   <div className="mt-4 p-3 bg-slate-950/40 rounded-xl border border-slate-850 text-left">
@@ -968,16 +1182,20 @@ export default function Home() {
                         <thead>
                           <tr className="border-b border-slate-850 text-slate-400 font-semibold">
                             <th className="pb-1 pr-3">Row</th>
-                            <th className="pb-1 pr-3 truncate max-w-[120px]">{nicColumn || "NIC"}</th>
-                            <th className="pb-1 truncate max-w-[120px]">{empColumn || "Employee No"}</th>
+                            <th className="pb-1 pr-3 truncate max-w-[100px]">{nicColumn || "NIC"}</th>
+                            <th className="pb-1 pr-3 truncate max-w-[100px]">{empColumn || "Employee No"}</th>
+                            <th className="pb-1 pr-3 truncate max-w-[100px]">{nameColumn || "Name"}</th>
+                            <th className="pb-1 truncate max-w-[100px]">{phoneColumn || "Phone"}</th>
                           </tr>
                         </thead>
                         <tbody>
                           {excelData.slice(0, 2).map((row, idx) => (
                             <tr key={idx} className="text-slate-300 font-mono">
                               <td className="py-1 pr-3">#{idx + 2}</td>
-                              <td className="py-1 pr-3 truncate max-w-[120px]">{String(row[nicColumn] || "")}</td>
-                              <td className="py-1 truncate max-w-[120px]">{String(row[empColumn] || "")}</td>
+                              <td className="py-1 pr-3 truncate max-w-[100px]">{String(row[nicColumn] || "")}</td>
+                              <td className="py-1 pr-3 truncate max-w-[100px]">{String(row[empColumn] || "")}</td>
+                              <td className="py-1 pr-3 truncate max-w-[100px]">{String(row[nameColumn] || "")}</td>
+                              <td className="py-1 truncate max-w-[100px]">{String(row[phoneColumn] || "")}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -1237,7 +1455,7 @@ export default function Home() {
                     className="mt-1.5 w-full bg-slate-950 border border-slate-800 hover:border-slate-700/80 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 font-mono outline-none focus:border-teal-500 transition-all duration-200"
                   />
                   <span className="text-[9px] text-slate-500 mt-1 block">
-                    {lang === "si" ? "උදා: EMP-001_slip.pdf" : "Result: EMP-001_slip.pdf"}
+                    {lang === "si" ? "උදා: EMP-001 (951234567V)_slip.pdf" : "Result: EMP-001 (951234567V)_slip.pdf"}
                   </span>
                 </div>
 
@@ -1378,11 +1596,13 @@ export default function Home() {
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
                       <tr className="bg-slate-950/40 text-slate-400 font-bold border-b border-slate-800">
-                        <th className="py-3 px-6">{lang === "si" ? "මුල් PDF ගොනු නම (ZIP)" : "Original Filename (ZIP)"}</th>
-                        <th className="py-3 px-6">{lang === "si" ? "හඳුනාගත් NIC" : "Extracted NIC Key"}</th>
-                        <th className="py-3 px-6" />
-                        <th className="py-3 px-6">{lang === "si" ? "නව ගොනු නම (Employee No)" : "Target Filename (Employee No)"}</th>
-                        <th className="py-3 px-6 text-center">{lang === "si" ? "තත්ත්වය" : "Status"}</th>
+                        <th className="py-3 px-6">{lang === "si" ? "මුල් PDF (ZIP)" : "Original PDF (ZIP)"}</th>
+                        <th className="py-3 px-4">{lang === "si" ? "NIC" : "NIC"}</th>
+                        <th className="py-3 px-4">{lang === "si" ? "නම" : "Name"}</th>
+                        <th className="py-3 px-4">{lang === "si" ? "දුරකථනය" : "Phone"}</th>
+                        <th className="py-3 px-4">{lang === "si" ? "නව ගොනු නම" : "Target Filename"}</th>
+                        <th className="py-3 px-4 text-center">{lang === "si" ? "තත්ත්වය" : "Status"}</th>
+                        <th className="py-3 px-6 text-right">{lang === "si" ? "ක්‍රියාව" : "Action"}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-850">
@@ -1390,12 +1610,12 @@ export default function Home() {
                         <tr key={idx} className="hover:bg-slate-900/30 transition-all duration-150">
                           
                           {/* Original PDF Name */}
-                          <td className="py-3 px-6 font-mono text-slate-300 truncate max-w-[200px]" title={item.originalName}>
+                          <td className="py-3 px-6 font-mono text-slate-300 truncate max-w-[150px]" title={item.originalName}>
                             {item.originalName}
                           </td>
 
                           {/* Extracted NIC */}
-                          <td className="py-3 px-6 font-mono">
+                          <td className="py-3 px-4 font-mono">
                             {item.nicKey ? (
                               <span className="text-slate-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
                                 {item.nicKey}
@@ -1405,16 +1625,21 @@ export default function Home() {
                             )}
                           </td>
 
-                          {/* Arrow pointer */}
-                          <td className="py-3 px-6 text-slate-500">
-                            <ArrowRight className="h-3.5 w-3.5" />
+                          {/* Name */}
+                          <td className="py-3 px-4 text-slate-300 font-medium truncate max-w-[120px]" title={item.name || ""}>
+                            {item.name || <span className="text-slate-500 italic">-</span>}
+                          </td>
+
+                          {/* Phone */}
+                          <td className="py-3 px-4 font-mono text-slate-300">
+                            {item.phone || <span className="text-slate-500 italic">-</span>}
                           </td>
 
                           {/* Target Renamed Name */}
-                          <td className="py-3 px-6 font-mono">
+                          <td className="py-3 px-4 font-mono">
                             {item.status === "matched" && item.empNo ? (
                               <span className="text-emerald-400 font-bold">
-                                {item.empNo}{filenameSuffix}.pdf
+                                {item.empNo} ({item.nicKey.toUpperCase()}){filenameSuffix}.pdf
                               </span>
                             ) : includeUnmatched && item.status !== "matched" ? (
                               <span className="text-slate-400 italic">
@@ -1428,7 +1653,7 @@ export default function Home() {
                           </td>
 
                           {/* Status Badge */}
-                          <td className="py-3 px-6">
+                          <td className="py-3 px-4">
                             <div className="flex items-center justify-center">
                               {item.status === "matched" ? (
                                 item.matchType === "exact" ? (
@@ -1474,6 +1699,29 @@ export default function Home() {
                                 </span>
                               )}
                             </div>
+                          </td>
+
+                          {/* WhatsApp Action Button */}
+                          <td className="py-3 px-6 text-right">
+                            {item.status === "matched" && item.phone ? (
+                              <button
+                                onClick={() => handleSendWhatsApp(item)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-slate-950 border border-emerald-500/20 hover:border-emerald-400 text-[10px] font-bold tracking-wide transition-all duration-300 active:scale-95 shadow-sm hover:shadow-emerald-500/20 cursor-pointer"
+                              >
+                                <svg
+                                  className="h-3.5 w-3.5 fill-current"
+                                  viewBox="0 0 24 24"
+                                  xmlns="http://www.w3.org/2000/svg"
+                                >
+                                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L0 24l6.335-1.662c1.746.953 3.71 1.458 5.704 1.459h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+                                </svg>
+                                {lang === "si" ? "යවන්න" : "Send"}
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-slate-500 italic">
+                                {lang === "si" ? "අංකයක් නැත" : "No Phone"}
+                              </span>
+                            )}
                           </td>
 
                         </tr>
