@@ -1775,7 +1775,7 @@ export default function Home() {
               </div>
 
               {/* Table */}
-              <div className="overflow-auto max-h-[500px] border border-slate-800/80 rounded-xl relative scrollbar-thin scrollbar-thumb-slate-850 scrollbar-track-transparent">
+              <div className="overflow-auto max-h-[950px] border border-slate-800/80 rounded-xl relative scrollbar-thin scrollbar-thumb-slate-850 scrollbar-track-transparent">
                 {filteredList.length === 0 ? (
                   <div className="p-8 text-center flex flex-col items-center">
                     <AlertCircle className="h-8 w-8 text-slate-600 mb-2" />
