@@ -87,6 +87,22 @@ export default function Home() {
   // Tab State for bilingual help
   const [lang, setLang] = useState<"si" | "en">("en");
 
+  // Pass Month (Auto detected based on date but fully editable)
+  const [passMonth, setPassMonth] = useState<string>(() => {
+    const today = new Date();
+    const day = today.getDate();
+    let monthIndex = today.getMonth();
+    // If today is the 20th or later, target the next month's pass!
+    if (day >= 20) {
+      monthIndex = (monthIndex + 1) % 12;
+    }
+    const months = [
+      "January", "February", "March", "April", "May", "June", 
+      "July", "August", "September", "October", "November", "December"
+    ];
+    return months[monthIndex];
+  });
+
   // Helper to normalize strings for matching (removes spaces, symbols, lowercase)
   const normalizeNIC = (val: any): string => {
     if (val === undefined || val === null) return "";
@@ -815,7 +831,9 @@ export default function Home() {
       document.body.removeChild(link);
       
       // Open WhatsApp Desktop App directly using the custom whatsapp:// URI scheme!
-      const whatsappText = `Hello ${item.name || ""},\n\nPlease find your document attached.\n\n*(Note: The document has been downloaded as '${fileName}'. Please attach/drag it into this chat.)*`;
+      const whatsappText = lang === "si"
+        ? `ආයුබෝවන් ${item.name || ""},\n\nමෙන්න ඔබගේ ${passMonth} මාසික බලපත්‍රය (monthly pass).\n\n*(සටහන: ගොනුව ඔබගේ පරිගණකයට '${fileName}' නමින් භාගත වී ඇත. කරුණාකර එය මෙම chat එකට ඇමුණුමක් (attach) ලෙස යොමු කරන්න.)*`
+        : `Hello ${item.name || ""},\n\nHere is your ${passMonth} monthly pass.\n\n*(Note: The file has been saved to your downloads as '${fileName}'. Please attach/drag it into this chat to send.)*`;
       const whatsappUrl = `whatsapp://send?phone=${formattedPhone}&text=${encodeURIComponent(whatsappText)}`;
       window.location.href = whatsappUrl;
       
@@ -1569,7 +1587,7 @@ export default function Home() {
                 {lang === "si" ? "පරිවර්තන සැකසුම් සහ බාගත කිරීම්" : "Relabeling Settings & Output Archive"}
               </h3>
               
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-5 items-end">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6 mt-5 items-end">
                 
                 {/* Setting 1: Custom Suffix */}
                 <div>
@@ -1588,7 +1606,31 @@ export default function Home() {
                   </span>
                 </div>
 
-                {/* Setting 2: Unmatched Action toggle */}
+                {/* Setting 2: Pass Month (Auto Detected / Editable) */}
+                <div>
+                  <div className="flex items-center gap-1.5 justify-between">
+                    <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                      {lang === "si" ? "බලපත්‍ර මාසය" : "Pass Month (Auto)"}
+                    </label>
+                    <span className="text-[9px] text-teal-400 font-bold bg-teal-500/10 px-1 py-0.2 rounded animate-pulse shrink-0">
+                      Auto
+                    </span>
+                  </div>
+                  <select
+                    value={passMonth}
+                    onChange={(e) => setPassMonth(e.target.value)}
+                    className="mt-1.5 w-full bg-slate-950 border border-slate-800 hover:border-slate-700/80 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 outline-none focus:border-teal-500 transition-all duration-200 cursor-pointer"
+                  >
+                    {[
+                      "January", "February", "March", "April", "May", "June", 
+                      "July", "August", "September", "October", "November", "December"
+                    ].map((month) => (
+                      <option key={month} value={month}>{month}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Setting 3: Unmatched Action toggle */}
                 <div className="flex flex-col gap-2">
                   <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
                     {lang === "si" ? "නොගැලපෙන ZIP PDF ගොනු" : "ZIP PDFs without match"}
@@ -1607,7 +1649,7 @@ export default function Home() {
                   </label>
                 </div>
 
-                {/* Setting 3: Output ZIP File name */}
+                {/* Setting 4: Output ZIP File name */}
                 <div>
                   <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
                     {lang === "si" ? "ප්‍රතිදාන ZIP නම" : "Output ZIP Filename"}
