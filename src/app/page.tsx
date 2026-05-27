@@ -35,8 +35,7 @@ interface MatchResult {
   nicKey: string;
   empNo: string | null;
   name: string | null;
-  phone: string | null;
-  phone2?: string | null;
+  phones: string[];
   status: "matched" | "unmatched_zip" | "duplicate_nic" | "duplicate_emp";
   matchType?: "exact" | "substring" | "fuzzy" | "none";
   matchScore?: number;
@@ -109,6 +108,31 @@ export default function Home() {
       clean = "94" + clean;
     }
     return clean;
+  };
+
+  // Helper to extract multiple phone numbers from fields, splitting by common separators
+  const extractPhoneNumbers = (val1: any, val2: any): string[] => {
+    const rawList: string[] = [];
+    
+    const addNumbers = (val: any) => {
+      if (val === undefined || val === null) return;
+      const str = String(val).trim();
+      if (!str) return;
+      
+      // Split by common separators: /, comma, semicolon, |, "and", "or", backslash
+      const parts = str.split(/[\/,;|\\]|\band\b|\bor\b/i);
+      parts.forEach(p => {
+        const cleaned = p.trim();
+        if (cleaned && !rawList.includes(cleaned)) {
+          rawList.push(cleaned);
+        }
+      });
+    };
+    
+    addNumbers(val1);
+    addNumbers(val2);
+    
+    return rawList;
   };
 
   // Helper to validate and identify phone number type for WhatsApp
@@ -502,8 +526,7 @@ export default function Home() {
       normalizedNic: string; 
       empNo: string; 
       name: string; 
-      phone: string; 
-      phone2: string;
+      phones: string[];
       row: ExcelRow; 
       rowIdx: number; 
       originalNic: string; 
@@ -521,15 +544,13 @@ export default function Home() {
         const nicKey = normalizeNIC(rawNic);
         const empNo = String(rawEmp).trim();
         const name = String(rawName).trim();
-        const phone = String(rawPhone).trim();
-        const phone2 = String(rawPhone2).trim();
+        const phones = extractPhoneNumbers(rawPhone, rawPhone2);
         
         excelEntries.push({
           normalizedNic: nicKey,
           empNo: empNo,
           name: name,
-          phone: phone,
-          phone2: phone2,
+          phones: phones,
           row: row,
           rowIdx: index + 2, // 1-indexed + header row
           originalNic: String(rawNic).trim(),
@@ -553,8 +574,7 @@ export default function Home() {
           nicKey: "",
           empNo: null,
           name: null,
-          phone: null,
-          phone2: null,
+          phones: [],
           status: "unmatched_zip",
           matchType: "none",
           details: "ගොනු නාමයෙන් NIC එකක් හඳුනාගත නොහැක / Cannot extract NIC from filename"
@@ -630,8 +650,6 @@ export default function Home() {
         const targetEmpNo = bestMatch.empNo;
         const targetNic = bestMatch.normalizedNic;
         const targetName = bestMatch.name;
-        const targetPhone = bestMatch.phone;
-        const targetPhone2 = bestMatch.phone2;
         bestMatch.matched = true; // Mark as matched
 
         if (matchedExcelNicsSeen.has(targetNic)) {
@@ -641,8 +659,7 @@ export default function Home() {
             nicKey: nicKey,
             empNo: targetEmpNo,
             name: targetName,
-            phone: targetPhone,
-            phone2: targetPhone2,
+            phones: bestMatch.phones,
             status: "duplicate_nic",
             matchType: matchType,
             matchScore: matchScore,
@@ -656,8 +673,7 @@ export default function Home() {
             nicKey: nicKey,
             empNo: targetEmpNo,
             name: targetName,
-            phone: targetPhone,
-            phone2: targetPhone2,
+            phones: bestMatch.phones,
             status: "duplicate_emp",
             matchType: matchType,
             matchScore: matchScore,
@@ -672,8 +688,7 @@ export default function Home() {
             nicKey: nicKey,
             empNo: targetEmpNo,
             name: targetName,
-            phone: targetPhone,
-            phone2: targetPhone2,
+            phones: bestMatch.phones,
             status: "matched",
             matchType: matchType,
             matchScore: matchScore,
@@ -691,8 +706,7 @@ export default function Home() {
           nicKey: nicKey,
           empNo: null,
           name: null,
-          phone: null,
-          phone2: null,
+          phones: [],
           status: "unmatched_zip",
           matchType: "none",
           details: "Excel පත්‍රයේ ගැලපෙන අගයක් හමුනොවිය / No match found in Excel"
@@ -1767,54 +1781,43 @@ export default function Home() {
 
                           {/* Phone */}
                           <td className="py-3 px-4 font-mono">
-                            <div className="flex flex-col gap-1.5 min-w-[120px]">
-                              {/* Phone 1 */}
-                              {item.phone ? (() => {
-                                const validation = validatePhoneForWhatsApp(item.phone);
-                                return (
-                                  <div className="flex items-center justify-between gap-1.5 bg-slate-950/40 px-2 py-1 rounded border border-slate-800/80">
-                                    <div className="flex items-center gap-1.5 truncate">
-                                      <span className="text-[9px] font-bold text-teal-400 bg-teal-500/10 px-1 py-0.5 rounded shrink-0">P1</span>
-                                      <span className="text-xs text-slate-200 select-all truncate">{item.phone}</span>
+                            <div className="flex flex-col gap-1.5 min-w-[140px] max-w-[220px]">
+                              {item.phones && item.phones.length > 0 ? (
+                                item.phones.map((phoneNumber, index) => {
+                                  const validation = validatePhoneForWhatsApp(phoneNumber);
+                                  return (
+                                    <div key={index} className="flex items-center justify-between gap-2 bg-slate-950/40 px-2 py-1.5 rounded border border-slate-800/80 transition-all duration-200">
+                                      <div className="flex items-center gap-1.5 truncate">
+                                        <span className={`text-[9px] font-bold px-1 py-0.5 rounded shrink-0 ${
+                                          index === 0 ? "bg-teal-500/15 text-teal-400 border border-teal-500/10" : "bg-cyan-500/15 text-cyan-400 border border-cyan-500/10"
+                                        }`}>
+                                          P{index + 1}
+                                        </span>
+                                        <span className="text-xs text-slate-200 select-all truncate">{phoneNumber}</span>
+                                      </div>
+                                      
+                                      {/* Blinking Status Indicator Dot */}
+                                      <div className="flex items-center gap-1.5 shrink-0" title={validation.message}>
+                                        <span className="relative flex h-2.5 w-2.5">
+                                          {validation.type === "mobile" ? (
+                                            <>
+                                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></span>
+                                            </>
+                                          ) : validation.type === "landline" ? (
+                                            <>
+                                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]"></span>
+                                            </>
+                                          ) : (
+                                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-slate-600"></span>
+                                          )}
+                                        </span>
+                                      </div>
                                     </div>
-                                    <span 
-                                      className={`h-2 w-2 rounded-full shrink-0 ${
-                                        validation.type === "mobile" 
-                                          ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" 
-                                          : validation.type === "landline"
-                                            ? "bg-amber-500"
-                                            : "bg-slate-600"
-                                      }`}
-                                      title={validation.message}
-                                    />
-                                  </div>
-                                );
-                              })() : null}
-
-                              {/* Phone 2 */}
-                              {item.phone2 ? (() => {
-                                const validation = validatePhoneForWhatsApp(item.phone2);
-                                return (
-                                  <div className="flex items-center justify-between gap-1.5 bg-slate-950/40 px-2 py-1 rounded border border-slate-800/80">
-                                    <div className="flex items-center gap-1.5 truncate">
-                                      <span className="text-[9px] font-bold text-cyan-400 bg-cyan-500/10 px-1 py-0.5 rounded shrink-0">P2</span>
-                                      <span className="text-xs text-slate-200 select-all truncate">{item.phone2}</span>
-                                    </div>
-                                    <span 
-                                      className={`h-2 w-2 rounded-full shrink-0 ${
-                                        validation.type === "mobile" 
-                                          ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" 
-                                          : validation.type === "landline"
-                                            ? "bg-amber-500"
-                                            : "bg-slate-600"
-                                      }`}
-                                      title={validation.message}
-                                    />
-                                  </div>
-                                );
-                              })() : null}
-
-                              {!item.phone && !item.phone2 && (
+                                  );
+                                })
+                              ) : (
                                 <span className="text-slate-500 italic text-xs">-</span>
                               )}
                             </div>
@@ -1889,73 +1892,56 @@ export default function Home() {
                           {/* WhatsApp Action Buttons */}
                           <td className="py-3 px-6 text-right">
                             <div className="flex flex-col gap-1.5 items-end justify-center">
-                              {item.status === "matched" && (item.phone || item.phone2) ? (
-                                <>
-                                  {/* Action for Phone 1 */}
-                                  {item.phone && (() => {
-                                    const validation = validatePhoneForWhatsApp(item.phone);
-                                    return (
-                                      <div className="flex items-center gap-1">
-                                        {/* Verify direct link */}
-                                        <button
-                                          onClick={() => handleVerifyWhatsApp(item.phone!)}
-                                          className="p-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-teal-400 border border-slate-800 text-[10px] font-semibold transition-all duration-200 cursor-pointer active:scale-95 flex items-center justify-center"
-                                          title={lang === "si" ? "WhatsApp ගිණුම සක්‍රියදැයි බලන්න (P1)" : "Verify WhatsApp Active status (P1)"}
-                                        >
-                                          🔍
-                                        </button>
-                                        <button
-                                          onClick={() => handleSendWhatsApp(item, item.phone!)}
-                                          disabled={validation.type === "landline"}
-                                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[10px] font-bold tracking-wide transition-all duration-300 active:scale-95 shadow-sm cursor-pointer ${
-                                            validation.type === "landline" 
-                                              ? "bg-slate-900 border-slate-800 text-slate-500 cursor-not-allowed opacity-40" 
-                                              : "bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-slate-950 border-emerald-500/20 hover:border-emerald-400 hover:shadow-emerald-500/20"
-                                          }`}
-                                        >
-                                          <svg className="h-3.5 w-3.5 fill-current" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L0 24l6.335-1.662c1.746.953 3.71 1.458 5.704 1.459h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
-                                          </svg>
-                                          <span>{lang === "si" ? "P1 වෙත යවන්න" : "Send P1"}</span>
-                                        </button>
-                                      </div>
-                                    );
-                                  })()}
+                              {item.status === "matched" && item.phones && item.phones.length > 0 ? (
+                                item.phones.map((phoneNumber, index) => {
+                                  const validation = validatePhoneForWhatsApp(phoneNumber);
+                                  return (
+                                    <div key={index} className="flex items-center gap-1.5 bg-slate-950/30 p-1.5 rounded-xl border border-slate-850 hover:border-slate-800 transition-all duration-200">
+                                      {/* Phone Label Badge */}
+                                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${
+                                        index === 0 ? "bg-teal-500/10 text-teal-400" : "bg-cyan-500/10 text-cyan-400"
+                                      }`}>
+                                        #{index + 1}
+                                      </span>
+                                      
+                                      {/* Number (hidden on tiny screens, shown on desktop) */}
+                                      <span className="text-[10px] text-slate-400 font-mono hidden sm:inline truncate max-w-[85px]">
+                                        {phoneNumber}
+                                      </span>
 
-                                  {/* Action for Phone 2 */}
-                                  {item.phone2 && (() => {
-                                    const validation = validatePhoneForWhatsApp(item.phone2);
-                                    return (
-                                      <div className="flex items-center gap-1">
-                                        {/* Verify direct link */}
-                                        <button
-                                          onClick={() => handleVerifyWhatsApp(item.phone2!)}
-                                          className="p-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-teal-400 border border-slate-800 text-[10px] font-semibold transition-all duration-200 cursor-pointer active:scale-95 flex items-center justify-center"
-                                          title={lang === "si" ? "WhatsApp ගිණුම සක්‍රියදැයි බලන්න (P2)" : "Verify WhatsApp Active status (P2)"}
-                                        >
-                                          🔍
-                                        </button>
-                                        <button
-                                          onClick={() => handleSendWhatsApp(item, item.phone2!)}
-                                          disabled={validation.type === "landline"}
-                                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[10px] font-bold tracking-wide transition-all duration-300 active:scale-95 shadow-sm cursor-pointer ${
-                                            validation.type === "landline" 
-                                              ? "bg-slate-900 border-slate-800 text-slate-500 cursor-not-allowed opacity-40" 
-                                              : "bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-slate-950 border-emerald-500/20 hover:border-emerald-400 hover:shadow-emerald-500/20"
-                                          }`}
-                                        >
-                                          <svg className="h-3.5 w-3.5 fill-current" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L0 24l6.335-1.662c1.746.953 3.71 1.458 5.704 1.459h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
-                                          </svg>
-                                          <span>{lang === "si" ? "P2 වෙත යවන්න" : "Send P2"}</span>
-                                        </button>
-                                      </div>
-                                    );
-                                  })()}
-                                </>
+                                      {/* Separator line */}
+                                      <span className="h-3 w-px bg-slate-800 hidden sm:inline" />
+
+                                      {/* Direct Verification Check Button */}
+                                      <button
+                                        onClick={() => handleVerifyWhatsApp(phoneNumber)}
+                                        className="p-1 rounded-lg bg-slate-900/60 hover:bg-teal-500/10 hover:text-teal-400 text-slate-400 border border-slate-800/80 transition-all duration-200 active:scale-95 flex items-center justify-center cursor-pointer shrink-0"
+                                        title={lang === "si" ? `WhatsApp අංකයදැයි පරීක්ෂා කරන්න (#${index + 1})` : `Verify WhatsApp Active status (#${index + 1})`}
+                                      >
+                                        <Search className="h-3 w-3" />
+                                      </button>
+
+                                      {/* Direct Send PDF Button */}
+                                      <button
+                                        onClick={() => handleSendWhatsApp(item, phoneNumber)}
+                                        disabled={validation.type === "landline"}
+                                        className={`inline-flex items-center justify-center p-1 rounded-lg border transition-all duration-300 active:scale-95 cursor-pointer shrink-0 ${
+                                          validation.type === "landline"
+                                            ? "bg-slate-900/40 border-slate-850 text-slate-600 cursor-not-allowed opacity-40"
+                                            : "bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-slate-950 border-emerald-500/20 hover:border-emerald-400 hover:shadow-emerald-500/20"
+                                        }`}
+                                        title={lang === "si" ? `WhatsApp හරහා PDF යවන්න (#${index + 1})` : `Send PDF via WhatsApp (#${index + 1})`}
+                                      >
+                                        <svg className="h-3.5 w-3.5 fill-current" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                          <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L0 24l6.335-1.662c1.746.953 3.71 1.458 5.704 1.459h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+                                        </svg>
+                                      </button>
+                                    </div>
+                                  );
+                                })
                               ) : (
                                 <span className="text-[10px] text-slate-500 italic">
-                                  {lang === "si" ? "අංකයක් නැත" : "No Phone"}
+                                  {lang === "si" ? "අංකයන් නොමැත" : "No Phone Numbers"}
                                 </span>
                               )}
                             </div>
