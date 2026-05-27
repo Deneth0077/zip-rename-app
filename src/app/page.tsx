@@ -832,8 +832,8 @@ export default function Home() {
       
       // Open WhatsApp Desktop App directly using the custom whatsapp:// URI scheme!
       const whatsappText = lang === "si"
-        ? `ආයුබෝවන් ${item.name || ""},\n\nමෙන්න ඔබගේ ${passMonth} මාසික බලපත්‍රය (monthly pass).\n\n*(සටහන: ගොනුව ඔබගේ පරිගණකයට '${fileName}' නමින් භාගත වී ඇත. කරුණාකර එය මෙම chat එකට ඇමුණුමක් (attach) ලෙස යොමු කරන්න.)*`
-        : `Hello ${item.name || ""},\n\nHere is your ${passMonth} monthly pass.\n\n*(Note: The file has been saved to your downloads as '${fileName}'. Please attach/drag it into this chat to send.)*`;
+        ? `ආයුබෝවන් ${item.name || ""},\n\nමෙන්න ඔබගේ ${passMonth} මාසික බලපත්‍රය (monthly pass).\n\nනම (Name): ${item.name || ""}\nසේවක අංකය (Employee ID): ${item.empNo || ""}`
+        : `Hello ${item.name || ""},\n\nHere is your ${passMonth} monthly pass.\n\nName: ${item.name || ""}\nEmployee ID: ${item.empNo || ""}`;
       const whatsappUrl = `whatsapp://send?phone=${formattedPhone}&text=${encodeURIComponent(whatsappText)}`;
       window.location.href = whatsappUrl;
       
