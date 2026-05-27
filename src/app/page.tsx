@@ -201,7 +201,7 @@ export default function Home() {
     }
     
     const verifyUrl = `https://web.whatsapp.com/send?phone=${formattedPhone}`;
-    window.open(verifyUrl, "_blank");
+    window.open(verifyUrl, "whatsapp_verify");
   };
 
   // Helper to calculate Levenshtein distance for fuzzy matching
