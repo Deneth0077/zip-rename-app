@@ -36,6 +36,7 @@ interface MatchResult {
   empNo: string | null;
   name: string | null;
   phone: string | null;
+  phone2?: string | null;
   status: "matched" | "unmatched_zip" | "duplicate_nic" | "duplicate_emp";
   matchType?: "exact" | "substring" | "fuzzy" | "none";
   matchScore?: number;
@@ -61,6 +62,7 @@ export default function Home() {
   const [empColumn, setEmpColumn] = useState<string>("");
   const [nameColumn, setNameColumn] = useState<string>("");
   const [phoneColumn, setPhoneColumn] = useState<string>("");
+  const [phoneColumn2, setPhoneColumn2] = useState<string>("");
   
   // ZIP State
   const [zipInstance, setZipInstance] = useState<JSZip | null>(null);
@@ -84,7 +86,7 @@ export default function Home() {
   const [isDragZip, setIsDragZip] = useState(false);
 
   // Tab State for bilingual help
-  const [lang, setLang] = useState<"si" | "en">("si");
+  const [lang, setLang] = useState<"si" | "en">("en");
 
   // Helper to normalize strings for matching (removes spaces, symbols, lowercase)
   const normalizeNIC = (val: any): string => {
@@ -107,6 +109,59 @@ export default function Home() {
       clean = "94" + clean;
     }
     return clean;
+  };
+
+  // Helper to validate and identify phone number type for WhatsApp
+  const validatePhoneForWhatsApp = (phone: any): { isValid: boolean; type: "mobile" | "landline" | "invalid"; message: string } => {
+    if (phone === undefined || phone === null || String(phone).trim() === "") {
+      return { isValid: false, type: "invalid", message: "අංකයක් නොමැත / No number" };
+    }
+    
+    let clean = String(phone).replace(/[^0-9]/g, ""); // Keep digits only
+    
+    if (clean.length === 0) {
+      return { isValid: false, type: "invalid", message: "වැරදි අංකයක් / Invalid number" };
+    }
+
+    // Sri Lankan mobile: 07xxxxxxx or 947xxxxxxx
+    const isSLMobile = (clean.startsWith("07") && clean.length === 10) || 
+                       (clean.startsWith("947") && clean.length === 11) ||
+                       (clean.length === 9 && clean.startsWith("7"));
+
+    // Sri Lankan landline (starts with 0, not 07, length 10 or starts with 94, not 947, length 11)
+    const isSLHome = (clean.startsWith("0") && !clean.startsWith("07") && clean.length === 10) ||
+                     (clean.startsWith("94") && !clean.startsWith("947") && clean.length === 11);
+
+    if (isSLMobile) {
+      return { isValid: true, type: "mobile", message: "WhatsApp සක්‍රිය විය හැක (Mobile)" };
+    }
+    
+    if (isSLHome) {
+      return { isValid: false, type: "landline", message: "ලෑන්ඩ්ලයින් අංකයකි (Landline) - WhatsApp නැත" };
+    }
+
+    // Generic international format (8 to 15 digits)
+    if (clean.length >= 8 && clean.length <= 15) {
+      return { isValid: true, type: "mobile", message: "විදේශීය/වෙනත් අංකයකි (International)" };
+    }
+
+    return { isValid: false, type: "invalid", message: "අසම්පූර්ණ අංකයකි / Format error" };
+  };
+
+  // Open direct chat to verify if number exists on WhatsApp
+  const handleVerifyWhatsApp = (phoneNumber: string) => {
+    if (!phoneNumber) {
+      alert("දුරකථන අංකයක් හමු නොවුණි. / Phone number not found.");
+      return;
+    }
+    const formattedPhone = formatPhoneForWhatsApp(phoneNumber);
+    if (!formattedPhone) {
+      alert("දුරකථන අංකය වැරදි ආකෘතියක පවතී. / Invalid phone number format.");
+      return;
+    }
+    
+    const verifyUrl = `https://web.whatsapp.com/send?phone=${formattedPhone}`;
+    window.open(verifyUrl, "_blank");
   };
 
   // Helper to calculate Levenshtein distance for fuzzy matching
@@ -156,6 +211,7 @@ export default function Home() {
     setEmpColumn("");
     setNameColumn("");
     setPhoneColumn("");
+    setPhoneColumn2("");
   };
 
   // Reset ZIP State
@@ -210,7 +266,7 @@ export default function Home() {
     const extractedHeaders = Object.keys(rows[0]);
     setHeaders(extractedHeaders);
 
-    // Auto-detect columns (NIC, Employee No, Name, Phone)
+    // Auto-detect columns (NIC, Employee No, Name, Phone 1, Phone 2)
     let autoNic = "";
     let autoEmp = "";
     let autoName = "";
@@ -302,11 +358,41 @@ export default function Home() {
       ) || "";
     }
 
+    // Look for Phone 2
+    let autoPhone2 = "";
+    for (const header of extractedHeaders) {
+      if (header === autoPhone) continue;
+      const lowerHeader = header.toLowerCase();
+      if (
+        lowerHeader === "phone 2" ||
+        lowerHeader === "phone2" ||
+        lowerHeader === "mobile 2" ||
+        lowerHeader === "mobile2" ||
+        lowerHeader === "alt phone" ||
+        lowerHeader === "alternative phone" ||
+        lowerHeader === "home" ||
+        lowerHeader === "home phone" ||
+        lowerHeader === "landline" ||
+        lowerHeader === "telephone"
+      ) {
+        autoPhone2 = header;
+        break;
+      }
+    }
+
+    if (!autoPhone2) {
+      autoPhone2 = extractedHeaders.find(h => 
+        phoneKeywords.some(keyword => h.toLowerCase().includes(keyword)) && 
+        h !== autoNic && h !== autoEmp && h !== autoName && h !== autoPhone
+      ) || "";
+    }
+
     // Fallbacks
     setNicColumn(autoNic || extractedHeaders[0] || "");
     setEmpColumn(autoEmp || (extractedHeaders[1] !== autoNic ? extractedHeaders[1] : extractedHeaders[0]) || "");
     setNameColumn(autoName || extractedHeaders.find(h => h !== autoNic && h !== autoEmp) || "");
     setPhoneColumn(autoPhone || extractedHeaders.find(h => h !== autoNic && h !== autoEmp && h !== autoName) || "");
+    setPhoneColumn2(autoPhone2 || "");
   };
 
   // Handle Sheet Change
@@ -417,6 +503,7 @@ export default function Home() {
       empNo: string; 
       name: string; 
       phone: string; 
+      phone2: string;
       row: ExcelRow; 
       rowIdx: number; 
       originalNic: string; 
@@ -428,18 +515,21 @@ export default function Home() {
       const rawEmp = row[empColumn];
       const rawName = nameColumn ? row[nameColumn] : "";
       const rawPhone = phoneColumn ? row[phoneColumn] : "";
+      const rawPhone2 = phoneColumn2 ? row[phoneColumn2] : "";
       
       if (rawNic !== undefined && rawNic !== null && String(rawNic).trim() !== "") {
         const nicKey = normalizeNIC(rawNic);
         const empNo = String(rawEmp).trim();
         const name = String(rawName).trim();
         const phone = String(rawPhone).trim();
+        const phone2 = String(rawPhone2).trim();
         
         excelEntries.push({
           normalizedNic: nicKey,
           empNo: empNo,
           name: name,
           phone: phone,
+          phone2: phone2,
           row: row,
           rowIdx: index + 2, // 1-indexed + header row
           originalNic: String(rawNic).trim(),
@@ -464,6 +554,7 @@ export default function Home() {
           empNo: null,
           name: null,
           phone: null,
+          phone2: null,
           status: "unmatched_zip",
           matchType: "none",
           details: "ගොනු නාමයෙන් NIC එකක් හඳුනාගත නොහැක / Cannot extract NIC from filename"
@@ -540,6 +631,7 @@ export default function Home() {
         const targetNic = bestMatch.normalizedNic;
         const targetName = bestMatch.name;
         const targetPhone = bestMatch.phone;
+        const targetPhone2 = bestMatch.phone2;
         bestMatch.matched = true; // Mark as matched
 
         if (matchedExcelNicsSeen.has(targetNic)) {
@@ -550,6 +642,7 @@ export default function Home() {
             empNo: targetEmpNo,
             name: targetName,
             phone: targetPhone,
+            phone2: targetPhone2,
             status: "duplicate_nic",
             matchType: matchType,
             matchScore: matchScore,
@@ -564,6 +657,7 @@ export default function Home() {
             empNo: targetEmpNo,
             name: targetName,
             phone: targetPhone,
+            phone2: targetPhone2,
             status: "duplicate_emp",
             matchType: matchType,
             matchScore: matchScore,
@@ -579,6 +673,7 @@ export default function Home() {
             empNo: targetEmpNo,
             name: targetName,
             phone: targetPhone,
+            phone2: targetPhone2,
             status: "matched",
             matchType: matchType,
             matchScore: matchScore,
@@ -597,6 +692,7 @@ export default function Home() {
           empNo: null,
           name: null,
           phone: null,
+          phone2: null,
           status: "unmatched_zip",
           matchType: "none",
           details: "Excel පත්‍රයේ ගැලපෙන අගයක් හමුනොවිය / No match found in Excel"
@@ -626,7 +722,7 @@ export default function Home() {
     };
 
     return { matchedList, unmatchedExcelList, stats };
-  }, [excelData, zipFileList, nicColumn, empColumn, nameColumn, phoneColumn]);
+  }, [excelData, zipFileList, nicColumn, empColumn, nameColumn, phoneColumn, phoneColumn2]);
 
   // Filtered lists for rendering preview
   const filteredList = useMemo(() => {
@@ -661,13 +757,13 @@ export default function Home() {
   }, [matchingData, statusFilter, searchQuery, filterType]);
 
   // Send renamed PDF file to WhatsApp
-  const handleSendWhatsApp = async (item: MatchResult) => {
-    if (!item.phone) {
+  const handleSendWhatsApp = async (item: MatchResult, phoneNumber: string) => {
+    if (!phoneNumber) {
       alert("දුරකථන අංකයක් හමු නොවුණි. / Phone number not found.");
       return;
     }
 
-    const formattedPhone = formatPhoneForWhatsApp(item.phone);
+    const formattedPhone = formatPhoneForWhatsApp(phoneNumber);
     if (!formattedPhone) {
       alert("දුරකථන අංකය වැරදි ආකෘතියක පවතී. / Invalid phone number format.");
       return;
@@ -817,11 +913,11 @@ export default function Home() {
     try {
       // 1. Create Demo Excel Data
       const demoData = [
-        { "Employee Name": "Chathura Prasad", "NIC Number": "951234567V", "Employee Number": "EMP-2026-001", "Phone Number": "0771234567", "Department": "IT" },
-        { "Employee Name": "Nipuni Silva", "NIC Number": "978564321V", "Employee Number": "EMP-2026-002", "Phone Number": "0785643210", "Department": "HR" },
-        { "Employee Name": "Kasun Perera", "NIC Number": "199212345678", "Employee Number": "EMP-2026-003", "Phone Number": "0712345678", "Department": "Finance" },
-        { "Employee Name": "Ruwan Fernando", "NIC Number": "908765432V", "Employee Number": "EMP-2026-004", "Phone Number": "0768765432", "Department": "Operations" },
-        { "Employee Name": "Sanduni Jayasinghe", "NIC Number": "981230987V", "Employee Number": "EMP-2026-005", "Phone Number": "0771230987", "Department": "Marketing" }
+        { "Employee Name": "Chathura Prasad", "NIC Number": "951234567V", "Employee Number": "EMP-2026-001", "Phone Number": "0771234567", "Alt Phone": "0788888888", "Department": "IT" },
+        { "Employee Name": "Nipuni Silva", "NIC Number": "978564321V", "Employee Number": "EMP-2026-002", "Phone Number": "0785643210", "Alt Phone": "0112345678", "Department": "HR" },
+        { "Employee Name": "Kasun Perera", "NIC Number": "199212345678", "Employee Number": "EMP-2026-003", "Phone Number": "0712345678", "Alt Phone": "0723333333", "Department": "Finance" },
+        { "Employee Name": "Ruwan Fernando", "NIC Number": "908765432V", "Employee Number": "EMP-2026-004", "Phone Number": "0768765432", "Alt Phone": "", "Department": "Operations" },
+        { "Employee Name": "Sanduni Jayasinghe", "NIC Number": "981230987V", "Employee Number": "EMP-2026-005", "Phone Number": "0771230987", "Alt Phone": "0794444444", "Department": "Marketing" }
       ];
 
       const worksheet = XLSX.utils.json_to_sheet(demoData);
@@ -969,7 +1065,8 @@ export default function Home() {
                   <p className="text-sm text-slate-300 mt-1 leading-relaxed">
                     1. සේවක අංකය (Employee No) සහ ජාතික හැඳුනුම්පත් අංකය (NIC) සහිත <strong>Excel ගොනුව</strong> පළමුව උඩුගත කරන්න.<br />
                     2. PDF ගොනු ඇතුලත් <strong>ZIP ගොනුව</strong> උඩුගත කරන්න (එහි PDF වල නම ලෙස NIC අංකය තිබිය යුතුය).<br />
-                    3. මෙම පද්ධතිය මඟින් ස්වයංක්‍රීයව NIC අංක ගළපා PDF ගොනු වල නම සේවක අංකයට වෙනස් කර නව ZIP ගොනුවක් සකසා දෙනු ඇත.
+                    3. මෙම පද්ධතිය මඟින් ස්වයංක්‍රීයව NIC අංක ගළපා PDF ගොනු වල නම සේවක අංකයට වෙනස් කර නව ZIP ගොනුවක් සකසා දෙනු ඇත.<br />
+                    4. 💡 <strong>WhatsApp සත්‍යාපනය (Verification)</strong>: ඕනෑම දුරකථන අංකයක් ඉදිරියෙන් ඇති 🔍 බොත්තම ක්ලික් කිරීමෙන් එම අංකයට WhatsApp ගිණුමක් සක්‍රීයව පවතීද යන්න බ්‍රවුසරය හරහාම නොමිලේ පරීක්ෂා කර බැලිය හැක.
                   </p>
                 </>
               ) : (
@@ -978,7 +1075,8 @@ export default function Home() {
                   <p className="text-sm text-slate-300 mt-1 leading-relaxed">
                     1. Upload your <strong>Excel sheet</strong> containing both Employee Numbers and NIC Numbers.<br />
                     2. Upload your <strong>ZIP file</strong> containing PDFs currently named with NIC numbers (e.g. <code className="bg-slate-900 px-1 py-0.5 rounded text-teal-400 font-mono text-xs">951234567V.pdf</code>).<br />
-                    3. The app will automatically cross-match NICs, map them to their corresponding Employee Codes, rename the PDFs, and generate a new ZIP to download!
+                    3. The app will automatically cross-match NICs, map them to their corresponding Employee Codes, rename the PDFs, and generate a new ZIP to download!<br />
+                    4. 💡 <strong>WhatsApp Verification</strong>: Click the 🔍 button next to any number to instantly check if the number is registered on WhatsApp for free without expensive APIs.
                   </p>
                 </>
               )}
@@ -1145,10 +1243,10 @@ export default function Home() {
                       </p>
                     </div>
 
-                    {/* Phone Column Mapped */}
+                    {/* Phone Column 1 Mapped */}
                     <div>
                       <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-                        {lang === "si" ? "දුරකථන අංක තීරුව (Phone Column)" : "Phone Column"}
+                        {lang === "si" ? "ප්‍රධාන දුරකථන තීරුව (Primary Phone)" : "Primary Phone Column"}
                       </label>
                       <select
                         value={phoneColumn}
@@ -1156,12 +1254,34 @@ export default function Home() {
                         className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-medium text-slate-200 outline-none focus:border-teal-500 transition-all duration-200"
                       >
                         <option value="" disabled>-- Select Column --</option>
+                        <option value="">-- None / නැත --</option>
                         {headers.map((h) => (
                           <option key={h} value={h}>{h}</option>
                         ))}
                       </select>
                       <p className="text-[10px] text-slate-500 mt-1">
-                        {lang === "si" ? "WhatsApp පණිවිඩය යවන අංකය" : "WhatsApp recipient phone column"}
+                        {lang === "si" ? "ප්‍රධාන WhatsApp පණිවිඩය යවන අංකය" : "Primary WhatsApp recipient phone column"}
+                      </p>
+                    </div>
+
+                    {/* Phone Column 2 Mapped */}
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                        {lang === "si" ? "අතිරේක දුරකථන තීරුව (Secondary Phone)" : "Secondary Phone Column"}
+                      </label>
+                      <select
+                        value={phoneColumn2}
+                        onChange={(e) => setPhoneColumn2(e.target.value)}
+                        className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-medium text-slate-200 outline-none focus:border-teal-500 transition-all duration-200"
+                      >
+                        <option value="" disabled>-- Select Column --</option>
+                        <option value="">-- None / නැත --</option>
+                        {headers.map((h) => (
+                          <option key={h} value={h}>{h}</option>
+                        ))}
+                      </select>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        {lang === "si" ? "අතිරේක WhatsApp පණිවිඩය යවන අංකය" : "Secondary WhatsApp recipient phone column"}
                       </p>
                     </div>
                   </div>
@@ -1178,7 +1298,8 @@ export default function Home() {
                             <th className="pb-1 pr-3 truncate max-w-[100px]">{nicColumn || "NIC"}</th>
                             <th className="pb-1 pr-3 truncate max-w-[100px]">{empColumn || "Employee No"}</th>
                             <th className="pb-1 pr-3 truncate max-w-[100px]">{nameColumn || "Name"}</th>
-                            <th className="pb-1 truncate max-w-[100px]">{phoneColumn || "Phone"}</th>
+                            <th className="pb-1 pr-3 truncate max-w-[100px]">{phoneColumn || "Phone 1"}</th>
+                            <th className="pb-1 truncate max-w-[100px]">{phoneColumn2 || "Phone 2"}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1188,7 +1309,8 @@ export default function Home() {
                               <td className="py-1 pr-3 truncate max-w-[100px]">{String(row[nicColumn] || "")}</td>
                               <td className="py-1 pr-3 truncate max-w-[100px]">{String(row[empColumn] || "")}</td>
                               <td className="py-1 pr-3 truncate max-w-[100px]">{String(row[nameColumn] || "")}</td>
-                              <td className="py-1 truncate max-w-[100px]">{String(row[phoneColumn] || "")}</td>
+                              <td className="py-1 pr-3 truncate max-w-[100px]">{String(row[phoneColumn] || "")}</td>
+                              <td className="py-1 truncate max-w-[100px]">{String(row[phoneColumn2] || "")}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -1597,7 +1719,7 @@ export default function Home() {
               </div>
 
               {/* Table */}
-              <div className="overflow-x-auto">
+              <div className="overflow-auto max-h-[500px] border border-slate-800/80 rounded-xl relative scrollbar-thin scrollbar-thumb-slate-850 scrollbar-track-transparent">
                 {filteredList.length === 0 ? (
                   <div className="p-8 text-center flex flex-col items-center">
                     <AlertCircle className="h-8 w-8 text-slate-600 mb-2" />
@@ -1607,15 +1729,15 @@ export default function Home() {
                   </div>
                 ) : (
                   <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="bg-slate-950/40 text-slate-400 font-bold border-b border-slate-800">
+                    <thead className="sticky top-0 bg-slate-900 z-20 shadow-[0_1px_0_0_rgba(255,255,255,0.05)]">
+                      <tr className="text-slate-400 font-bold border-b border-slate-800 bg-slate-900">
                         <th className="py-3 px-6">{lang === "si" ? "මුල් PDF (ZIP)" : "Original PDF (ZIP)"}</th>
                         <th className="py-3 px-4">{lang === "si" ? "NIC" : "NIC"}</th>
                         <th className="py-3 px-4">{lang === "si" ? "නම" : "Name"}</th>
-                        <th className="py-3 px-4">{lang === "si" ? "දුරකථනය" : "Phone"}</th>
+                        <th className="py-3 px-4">{lang === "si" ? "දුරකථන අංක" : "Phone Numbers"}</th>
                         <th className="py-3 px-4">{lang === "si" ? "නව ගොනු නම" : "Target Filename"}</th>
                         <th className="py-3 px-4 text-center">{lang === "si" ? "තත්ත්වය" : "Status"}</th>
-                        <th className="py-3 px-6 text-right">{lang === "si" ? "ක්‍රියාව" : "Action"}</th>
+                        <th className="py-3 px-6 text-right">{lang === "si" ? "ක්‍රියාවන් (WhatsApp)" : "Actions (WhatsApp)"}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-850">
@@ -1644,8 +1766,58 @@ export default function Home() {
                           </td>
 
                           {/* Phone */}
-                          <td className="py-3 px-4 font-mono text-slate-300">
-                            {item.phone || <span className="text-slate-500 italic">-</span>}
+                          <td className="py-3 px-4 font-mono">
+                            <div className="flex flex-col gap-1.5 min-w-[120px]">
+                              {/* Phone 1 */}
+                              {item.phone ? (() => {
+                                const validation = validatePhoneForWhatsApp(item.phone);
+                                return (
+                                  <div className="flex items-center justify-between gap-1.5 bg-slate-950/40 px-2 py-1 rounded border border-slate-800/80">
+                                    <div className="flex items-center gap-1.5 truncate">
+                                      <span className="text-[9px] font-bold text-teal-400 bg-teal-500/10 px-1 py-0.5 rounded shrink-0">P1</span>
+                                      <span className="text-xs text-slate-200 select-all truncate">{item.phone}</span>
+                                    </div>
+                                    <span 
+                                      className={`h-2 w-2 rounded-full shrink-0 ${
+                                        validation.type === "mobile" 
+                                          ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" 
+                                          : validation.type === "landline"
+                                            ? "bg-amber-500"
+                                            : "bg-slate-600"
+                                      }`}
+                                      title={validation.message}
+                                    />
+                                  </div>
+                                );
+                              })() : null}
+
+                              {/* Phone 2 */}
+                              {item.phone2 ? (() => {
+                                const validation = validatePhoneForWhatsApp(item.phone2);
+                                return (
+                                  <div className="flex items-center justify-between gap-1.5 bg-slate-950/40 px-2 py-1 rounded border border-slate-800/80">
+                                    <div className="flex items-center gap-1.5 truncate">
+                                      <span className="text-[9px] font-bold text-cyan-400 bg-cyan-500/10 px-1 py-0.5 rounded shrink-0">P2</span>
+                                      <span className="text-xs text-slate-200 select-all truncate">{item.phone2}</span>
+                                    </div>
+                                    <span 
+                                      className={`h-2 w-2 rounded-full shrink-0 ${
+                                        validation.type === "mobile" 
+                                          ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" 
+                                          : validation.type === "landline"
+                                            ? "bg-amber-500"
+                                            : "bg-slate-600"
+                                      }`}
+                                      title={validation.message}
+                                    />
+                                  </div>
+                                );
+                              })() : null}
+
+                              {!item.phone && !item.phone2 && (
+                                <span className="text-slate-500 italic text-xs">-</span>
+                              )}
+                            </div>
                           </td>
 
                           {/* Target Renamed Name */}
@@ -1714,27 +1886,79 @@ export default function Home() {
                             </div>
                           </td>
 
-                          {/* WhatsApp Action Button */}
+                          {/* WhatsApp Action Buttons */}
                           <td className="py-3 px-6 text-right">
-                            {item.status === "matched" && item.phone ? (
-                              <button
-                                onClick={() => handleSendWhatsApp(item)}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-slate-950 border border-emerald-500/20 hover:border-emerald-400 text-[10px] font-bold tracking-wide transition-all duration-300 active:scale-95 shadow-sm hover:shadow-emerald-500/20 cursor-pointer"
-                              >
-                                <svg
-                                  className="h-3.5 w-3.5 fill-current"
-                                  viewBox="0 0 24 24"
-                                  xmlns="http://www.w3.org/2000/svg"
-                                >
-                                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L0 24l6.335-1.662c1.746.953 3.71 1.458 5.704 1.459h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
-                                </svg>
-                                {lang === "si" ? "යවන්න" : "Send"}
-                              </button>
-                            ) : (
-                              <span className="text-[10px] text-slate-500 italic">
-                                {lang === "si" ? "අංකයක් නැත" : "No Phone"}
-                              </span>
-                            )}
+                            <div className="flex flex-col gap-1.5 items-end justify-center">
+                              {item.status === "matched" && (item.phone || item.phone2) ? (
+                                <>
+                                  {/* Action for Phone 1 */}
+                                  {item.phone && (() => {
+                                    const validation = validatePhoneForWhatsApp(item.phone);
+                                    return (
+                                      <div className="flex items-center gap-1">
+                                        {/* Verify direct link */}
+                                        <button
+                                          onClick={() => handleVerifyWhatsApp(item.phone!)}
+                                          className="p-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-teal-400 border border-slate-800 text-[10px] font-semibold transition-all duration-200 cursor-pointer active:scale-95 flex items-center justify-center"
+                                          title={lang === "si" ? "WhatsApp ගිණුම සක්‍රියදැයි බලන්න (P1)" : "Verify WhatsApp Active status (P1)"}
+                                        >
+                                          🔍
+                                        </button>
+                                        <button
+                                          onClick={() => handleSendWhatsApp(item, item.phone!)}
+                                          disabled={validation.type === "landline"}
+                                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[10px] font-bold tracking-wide transition-all duration-300 active:scale-95 shadow-sm cursor-pointer ${
+                                            validation.type === "landline" 
+                                              ? "bg-slate-900 border-slate-800 text-slate-500 cursor-not-allowed opacity-40" 
+                                              : "bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-slate-950 border-emerald-500/20 hover:border-emerald-400 hover:shadow-emerald-500/20"
+                                          }`}
+                                        >
+                                          <svg className="h-3.5 w-3.5 fill-current" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L0 24l6.335-1.662c1.746.953 3.71 1.458 5.704 1.459h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+                                          </svg>
+                                          <span>{lang === "si" ? "P1 වෙත යවන්න" : "Send P1"}</span>
+                                        </button>
+                                      </div>
+                                    );
+                                  })()}
+
+                                  {/* Action for Phone 2 */}
+                                  {item.phone2 && (() => {
+                                    const validation = validatePhoneForWhatsApp(item.phone2);
+                                    return (
+                                      <div className="flex items-center gap-1">
+                                        {/* Verify direct link */}
+                                        <button
+                                          onClick={() => handleVerifyWhatsApp(item.phone2!)}
+                                          className="p-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-teal-400 border border-slate-800 text-[10px] font-semibold transition-all duration-200 cursor-pointer active:scale-95 flex items-center justify-center"
+                                          title={lang === "si" ? "WhatsApp ගිණුම සක්‍රියදැයි බලන්න (P2)" : "Verify WhatsApp Active status (P2)"}
+                                        >
+                                          🔍
+                                        </button>
+                                        <button
+                                          onClick={() => handleSendWhatsApp(item, item.phone2!)}
+                                          disabled={validation.type === "landline"}
+                                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[10px] font-bold tracking-wide transition-all duration-300 active:scale-95 shadow-sm cursor-pointer ${
+                                            validation.type === "landline" 
+                                              ? "bg-slate-900 border-slate-800 text-slate-500 cursor-not-allowed opacity-40" 
+                                              : "bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-slate-950 border-emerald-500/20 hover:border-emerald-400 hover:shadow-emerald-500/20"
+                                          }`}
+                                        >
+                                          <svg className="h-3.5 w-3.5 fill-current" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L0 24l6.335-1.662c1.746.953 3.71 1.458 5.704 1.459h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+                                          </svg>
+                                          <span>{lang === "si" ? "P2 වෙත යවන්න" : "Send P2"}</span>
+                                        </button>
+                                      </div>
+                                    );
+                                  })()}
+                                </>
+                              ) : (
+                                <span className="text-[10px] text-slate-500 italic">
+                                  {lang === "si" ? "අංකයක් නැත" : "No Phone"}
+                                </span>
+                              )}
+                            </div>
                           </td>
 
                         </tr>
