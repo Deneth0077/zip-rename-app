@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo, useEffect } from "react";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import {
@@ -86,6 +86,46 @@ export default function Home() {
 
   // Tab State for bilingual help
   const [lang, setLang] = useState<"si" | "en">("en");
+
+  // WhatsApp sent counts tracking
+  const [whatsappSentCounts, setWhatsappSentCounts] = useState<Record<string, number>>({});
+
+  // Load WhatsApp sent counts from localStorage on mount
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("whatsapp_sent_counts");
+      if (saved) {
+        try {
+          setWhatsappSentCounts(JSON.parse(saved));
+        } catch (e) {
+          console.error("Failed to parse WhatsApp sent counts", e);
+        }
+      }
+    }
+  }, []);
+
+  // Update WhatsApp sent count helper
+  const updateSentCount = useCallback((path: string) => {
+    setWhatsappSentCounts((prev) => {
+      const updated = { ...prev, [path]: (prev[path] || 0) + 1 };
+      localStorage.setItem("whatsapp_sent_counts", JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  // Reset WhatsApp sent counts helper
+  const handleResetSentCounts = useCallback(() => {
+    if (
+      confirm(
+        lang === "si"
+          ? "සියලුම WhatsApp යැවීම් වාර ගණන් බිංදු කිරීමට ඔබට විශ්වාසද?"
+          : "Are you sure you want to reset all WhatsApp sent counts?"
+      )
+    ) {
+      setWhatsappSentCounts({});
+      localStorage.removeItem("whatsapp_sent_counts");
+    }
+  }, [lang]);
 
   // Pass Month (Auto detected based on date but fully editable)
   const [passMonth, setPassMonth] = useState<string>(() => {
@@ -267,6 +307,8 @@ export default function Home() {
     handleResetZip();
     setProgress(0);
     setProgressText("");
+    setWhatsappSentCounts({});
+    localStorage.removeItem("whatsapp_sent_counts");
   };
 
   // Parse Excel File
@@ -829,6 +871,9 @@ export default function Home() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+
+      // Update download and sent status count
+      updateSentCount(item.originalPath);
       
       // Open WhatsApp Desktop App directly using the custom whatsapp:// URI scheme!
       const whatsappText = lang === "si"
@@ -1020,7 +1065,7 @@ export default function Home() {
 
       {/* Premium Header */}
       <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-50 transition-all duration-300">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+        <div className="max-w-[95%] 2xl:max-w-[1650px] mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="h-11 w-11 rounded-xl bg-gradient-to-tr from-teal-500 to-emerald-400 p-0.5 shadow-lg shadow-teal-500/20 flex items-center justify-center">
               <div className="h-full w-full rounded-[10px] bg-slate-900 flex items-center justify-center">
@@ -1081,7 +1126,7 @@ export default function Home() {
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col gap-8 relative z-10">
+      <main className="flex-1 max-w-[95%] 2xl:max-w-[1650px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col gap-8 relative z-10">
         
         {/* Bilingual Summary Explanation banner */}
         <div className="bg-gradient-to-r from-teal-950/40 to-emerald-950/20 border border-teal-500/20 rounded-2xl p-5 shadow-xl relative overflow-hidden backdrop-blur-sm">
@@ -1722,6 +1767,20 @@ export default function Home() {
                     <option value="name">{lang === "si" ? "නමින් පමණි" : "Name Only"}</option>
                   </select>
 
+                  {/* Reset Sent Counts Button */}
+                  {Object.keys(whatsappSentCounts).length > 0 && (
+                    <button
+                      onClick={handleResetSentCounts}
+                      className="text-xs px-3.5 py-2 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-slate-950 transition-all duration-200 font-bold active:scale-95 cursor-pointer flex items-center gap-1.5"
+                      title={lang === "si" ? "සියලුම WhatsApp යැවීම් බිංදු කරන්න" : "Reset all WhatsApp sent counts"}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>
+                        {lang === "si" ? "ගණන් බිංදු කරන්න" : "Reset Counts"}
+                      </span>
+                    </button>
+                  )}
+
                   {/* Search Bar */}
                   <div className="relative max-w-xs w-full">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-500" />
@@ -1787,43 +1846,44 @@ export default function Home() {
                   <table className="w-full text-left text-xs border-collapse">
                     <thead className="sticky top-0 bg-slate-900 z-20 shadow-[0_1px_0_0_rgba(255,255,255,0.05)]">
                       <tr className="text-slate-400 font-bold border-b border-slate-800 bg-slate-900">
-                        <th className="py-3 px-6">{lang === "si" ? "මුල් PDF (ZIP)" : "Original PDF (ZIP)"}</th>
-                        <th className="py-3 px-4">{lang === "si" ? "NIC" : "NIC"}</th>
-                        <th className="py-3 px-4">{lang === "si" ? "නම" : "Name"}</th>
-                        <th className="py-3 px-4">{lang === "si" ? "දුරකථන අංක" : "Phone Numbers"}</th>
-                        <th className="py-3 px-4">{lang === "si" ? "නව ගොනු නම" : "Target Filename"}</th>
-                        <th className="py-3 px-4 text-center">{lang === "si" ? "තත්ත්වය" : "Status"}</th>
-                        <th className="py-3 px-6 text-right">{lang === "si" ? "ක්‍රියාවන් (WhatsApp)" : "Actions (WhatsApp)"}</th>
+                        <th className="py-4 px-6">{lang === "si" ? "මුල් PDF (ZIP)" : "Original PDF (ZIP)"}</th>
+                        <th className="py-4 px-4">{lang === "si" ? "NIC" : "NIC"}</th>
+                        <th className="py-4 px-4">{lang === "si" ? "නම" : "Name"}</th>
+                        <th className="py-4 px-4">{lang === "si" ? "දුරකථන අංක" : "Phone Numbers"}</th>
+                        <th className="py-4 px-4">{lang === "si" ? "නව ගොනු නම" : "Target Filename"}</th>
+                        <th className="py-4 px-4 text-center">{lang === "si" ? "තත්ත්වය" : "Status"}</th>
+                        <th className="py-4 px-4 text-center">{lang === "si" ? "යැවූ තත්ත්වය" : "Sent Status"}</th>
+                        <th className="py-4 px-6 text-right">{lang === "si" ? "ක්‍රියාවන් (WhatsApp)" : "Actions (WhatsApp)"}</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-850">
+                    <tbody className="divide-y divide-slate-850/40">
                       {filteredList.map((item, idx) => (
-                        <tr key={idx} className="hover:bg-slate-900/30 transition-all duration-150">
+                        <tr key={idx} className="hover:bg-slate-900/50 hover:backdrop-blur-sm border-b border-slate-850/40 last:border-0 transition-all duration-200">
                           
                           {/* Original PDF Name */}
-                          <td className="py-3 px-6 font-mono text-slate-300 truncate max-w-[150px]" title={item.originalName}>
+                          <td className="py-4 px-6 font-mono text-slate-300 truncate max-w-[260px] hover:text-teal-400 transition-colors duration-150" title={item.originalName}>
                             {item.originalName}
                           </td>
 
                           {/* Extracted NIC */}
-                          <td className="py-3 px-4 font-mono">
+                          <td className="py-4 px-4 font-mono">
                             {item.nicKey ? (
-                              <span className="text-slate-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                              <span className="text-slate-300 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800/80 shadow-sm font-medium">
                                 {item.nicKey}
                               </span>
                             ) : (
-                              <span className="text-slate-500 italic">None</span>
+                              <span className="text-slate-500 italic font-light">None</span>
                             )}
                           </td>
 
                           {/* Name */}
-                          <td className="py-3 px-4 text-slate-300 font-medium truncate max-w-[120px]" title={item.name || ""}>
-                            {item.name || <span className="text-slate-500 italic">-</span>}
+                          <td className="py-4 px-4 text-slate-200 font-semibold truncate max-w-[220px]" title={item.name || ""}>
+                            {item.name || <span className="text-slate-500 italic font-normal">-</span>}
                           </td>
 
                           {/* Phone */}
-                          <td className="py-3 px-4 font-mono">
-                            <div className="flex flex-col gap-1.5 min-w-[140px] max-w-[220px]">
+                          <td className="py-4 px-4 font-mono">
+                            <div className="flex flex-col gap-1.5 min-w-[160px] max-w-[240px]">
                               {item.phones && item.phones.length > 0 ? (
                                 item.phones.map((phoneNumber, index) => {
                                   const validation = validatePhoneForWhatsApp(phoneNumber);
@@ -1866,24 +1926,24 @@ export default function Home() {
                           </td>
 
                           {/* Target Renamed Name */}
-                          <td className="py-3 px-4 font-mono">
+                          <td className="py-4 px-4 font-mono text-sm max-w-[280px] break-words">
                             {item.status === "matched" && item.empNo ? (
-                              <span className="text-emerald-400 font-bold">
+                              <span className="text-emerald-400 font-bold bg-emerald-500/5 border border-emerald-500/10 px-2 py-1.5 rounded-lg shadow-sm block text-center truncate" title={`${item.empNo} (${item.nicKey.toUpperCase()})${filenameSuffix}.pdf`}>
                                 {item.empNo} ({item.nicKey.toUpperCase()}){filenameSuffix}.pdf
                               </span>
                             ) : includeUnmatched && item.status !== "matched" ? (
-                              <span className="text-slate-400 italic">
+                              <span className="text-slate-400 italic bg-slate-950/40 px-2 py-1.5 rounded-lg border border-slate-900 block text-center truncate" title={item.originalName}>
                                 {item.originalName}
                               </span>
                             ) : (
-                              <span className="text-rose-400/80 line-through">
+                              <span className="text-rose-400/60 line-through bg-rose-500/5 px-2 py-1.5 rounded-lg border border-rose-500/10 block text-center">
                                 (Excluded)
                               </span>
                             )}
                           </td>
 
                           {/* Status Badge */}
-                          <td className="py-3 px-4">
+                          <td className="py-4 px-4">
                             <div className="flex items-center justify-center">
                               {item.status === "matched" ? (
                                 item.matchType === "exact" ? (
@@ -1931,8 +1991,29 @@ export default function Home() {
                             </div>
                           </td>
 
+                          {/* Sent Status */}
+                          <td className="py-4 px-4 text-center">
+                            <div className="flex items-center justify-center">
+                              {whatsappSentCounts[item.originalPath] ? (
+                                <div className="flex items-center gap-1.5 bg-emerald-500/10 text-emerald-400 px-2.5 py-1 rounded-full border border-emerald-500/20 font-semibold text-[10px] shadow-[0_0_8px_rgba(16,185,129,0.1)] animate-pulse">
+                                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                                  <span>
+                                    {lang === "si" 
+                                      ? `යවා ඇත (${whatsappSentCounts[item.originalPath]})` 
+                                      : `Sent (${whatsappSentCounts[item.originalPath]})`
+                                    }
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="text-slate-500 text-xs italic font-light">
+                                  {lang === "si" ? "යවා නැත" : "Not Sent"}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
                           {/* WhatsApp Action Buttons */}
-                          <td className="py-3 px-6 text-right">
+                          <td className="py-4 px-6 text-right">
                             <div className="flex flex-col gap-1.5 items-end justify-center">
                               {item.status === "matched" && item.phones && item.phones.length > 0 ? (
                                 item.phones.map((phoneNumber, index) => {
@@ -1982,7 +2063,7 @@ export default function Home() {
                                   );
                                 })
                               ) : (
-                                <span className="text-[10px] text-slate-500 italic">
+                                <span className="text-[10px] text-slate-500 italic font-light">
                                   {lang === "si" ? "අංකයන් නොමැත" : "No Phone Numbers"}
                                 </span>
                               )}
@@ -2038,7 +2119,7 @@ export default function Home() {
 
       {/* Premium Footer */}
       <footer className="mt-auto border-t border-slate-800/80 bg-slate-950 py-8 relative z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-4 text-center md:text-left">
+        <div className="max-w-[95%] 2xl:max-w-[1650px] mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-4 text-center md:text-left">
           <div>
             <p className="text-xs text-slate-400 font-light">
               &copy; 2026 ZIP Rename Nexus. Built for lightning-fast locally processed PDF relabeling.
