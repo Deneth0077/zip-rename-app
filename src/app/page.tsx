@@ -22,7 +22,10 @@ import {
   Trash2,
   AlertTriangle,
   Flame,
-  Binary
+  Binary,
+  Printer,
+  X,
+  Eye
 } from "lucide-react";
 
 interface ExcelRow {
@@ -142,6 +145,13 @@ export default function Home() {
     ];
     return months[monthIndex];
   });
+
+  // Print & Layout State
+  const [selectedPasses, setSelectedPasses] = useState<Set<string>>(new Set());
+  const [printLayout, setPrintLayout] = useState<"A4" | "A5">("A4");
+  const [printOrientation, setPrintOrientation] = useState<"portrait" | "landscape">("portrait");
+  const [isPrintPreviewOpen, setIsPrintPreviewOpen] = useState(false);
+  const [previewPageIdx, setPreviewPageIdx] = useState(0);
 
   // Helper to normalize strings for matching (removes spaces, symbols, lowercase)
   const normalizeNIC = (val: any): string => {
@@ -299,6 +309,7 @@ export default function Home() {
     setZipFile(null);
     setZipInstance(null);
     setZipFileList([]);
+    setSelectedPasses(new Set());
   };
 
   // Reset All
@@ -309,6 +320,248 @@ export default function Home() {
     setProgressText("");
     setWhatsappSentCounts({});
     localStorage.removeItem("whatsapp_sent_counts");
+    setSelectedPasses(new Set());
+    setIsPrintPreviewOpen(false);
+  };
+
+  // Toggle selection for a single pass
+  const handleTogglePass = useCallback((originalPath: string) => {
+    setSelectedPasses((prev) => {
+      const next = new Set(prev);
+      if (next.has(originalPath)) {
+        next.delete(originalPath);
+      } else {
+        next.add(originalPath);
+      }
+      return next;
+    });
+  }, []);
+
+  // Toggle selection for all filtered passes
+  const handleToggleAllPasses = useCallback((itemsList: MatchResult[]) => {
+    setSelectedPasses((prev) => {
+      const next = new Set(prev);
+      const allSelected = itemsList.every((item) => prev.has(item.originalPath));
+      itemsList.forEach((item) => {
+        if (allSelected) {
+          next.delete(item.originalPath);
+        } else {
+          next.add(item.originalPath);
+        }
+      });
+      return next;
+    });
+  }, []);
+
+  // Generate Print-ready PDF on A4/A5 using pdf-lib
+  const generatePrintPDF = async (shouldTriggerBrowserPrint = false) => {
+    if (selectedPasses.size === 0) {
+      alert(lang === "si" ? "ප්‍රින්ට් කිරීම සඳහා කරුණාකර අවම වශයෙන් එක් බලපත්‍රයක්වත් තෝරන්න." : "Please select at least one pass to print.");
+      return;
+    }
+
+    setIsProcessing(true);
+    setProgress(10);
+    setProgressText(lang === "si" ? "PDF ලේඛනය සකසමින්..." : "Preparing PDF document...");
+
+    try {
+      const { PDFDocument, rgb, StandardFonts } = await import("pdf-lib");
+      const masterPdf = await PDFDocument.create();
+
+      // Get list of selected items in the order they appear in the matching list
+      const { matchedList } = matchingData;
+      const selectedItems = matchedList.filter(item => selectedPasses.has(item.originalPath));
+
+      // MM to points conversion factor (1 inch = 72 pt, 1 inch = 25.4 mm)
+      const MM_TO_POINTS = 2.83464567;
+      const cardWidthPt = 86 * MM_TO_POINTS;
+      const cardHeightPt = 60.6 * MM_TO_POINTS;
+
+      // Layout configuration
+      let cardsPerPage = 8;
+      let cols = 2;
+      let rows = 4;
+      let pageWidth = 210 * MM_TO_POINTS; // A4
+      let pageHeight = 297 * MM_TO_POINTS; // A4
+
+      if (printLayout === "A5") {
+        if (printOrientation === "landscape") {
+          cardsPerPage = 4;
+          cols = 2;
+          rows = 2;
+          pageWidth = 210 * MM_TO_POINTS;
+          pageHeight = 148 * MM_TO_POINTS;
+        } else {
+          cardsPerPage = 3;
+          cols = 1;
+          rows = 3;
+          pageWidth = 148 * MM_TO_POINTS;
+          pageHeight = 210 * MM_TO_POINTS;
+        }
+      } else { // A4
+        if (printOrientation === "landscape") {
+          // A4 Landscape: fits 2 cols x 3 rows comfortably
+          cardsPerPage = 6;
+          cols = 2;
+          rows = 3;
+          pageWidth = 297 * MM_TO_POINTS;
+          pageHeight = 210 * MM_TO_POINTS;
+        } else { // Portrait
+          cardsPerPage = 8;
+          cols = 2;
+          rows = 4;
+          pageWidth = 210 * MM_TO_POINTS;
+          pageHeight = 297 * MM_TO_POINTS;
+        }
+      }
+
+      const font = await masterPdf.embedFont(StandardFonts.HelveticaBold);
+      const totalSelected = selectedItems.length;
+
+      for (let i = 0; i < totalSelected; i += cardsPerPage) {
+        const pageItems = selectedItems.slice(i, i + cardsPerPage);
+        const page = masterPdf.addPage([pageWidth, pageHeight]);
+
+        // Calculate margin grids based on layout
+        // Widthwise grid margins
+        const totalCardsWidth = cols * cardWidthPt;
+        const remainingWidth = pageWidth - totalCardsWidth;
+        const leftMargin = remainingWidth / (cols + 1);
+        const colGap = leftMargin; // distributed evenly
+
+        // Heightwise grid margins
+        const totalCardsHeight = rows * cardHeightPt;
+        const remainingHeight = pageHeight - totalCardsHeight;
+        const topMargin = remainingHeight / (rows + 1);
+        const rowGap = topMargin; // distributed evenly
+
+        for (let j = 0; j < pageItems.length; j++) {
+          const item = pageItems[j];
+          const colIdx = j % cols;
+          const rowIdx = Math.floor(j / cols);
+
+          // Find JSZipObject
+          const origZipFile = zipFileList.find((f) => f.path === item.originalPath);
+          if (!origZipFile) continue;
+
+          // X coordinate (from left)
+          const x = leftMargin + colIdx * (cardWidthPt + colGap);
+          // Y coordinate (from bottom up in PDF coordinate system)
+          const y = pageHeight - topMargin - (rowIdx + 1) * cardHeightPt - rowIdx * rowGap;
+
+          try {
+            const bytes = await origZipFile.fileObj.async("uint8array");
+            const cardPdf = await PDFDocument.load(bytes);
+            const [copiedPage] = await masterPdf.copyPages(cardPdf, [0]);
+            const embeddedPage = await masterPdf.embedPage(copiedPage);
+
+            page.drawPage(embeddedPage, {
+              x,
+              y,
+              width: cardWidthPt,
+              height: cardHeightPt,
+            });
+            
+            // Draw a very light bounding border to guide scissor cutting if layout allows it
+            page.drawRectangle({
+              x,
+              y,
+              width: cardWidthPt,
+              height: cardHeightPt,
+              borderColor: rgb(0.85, 0.85, 0.85),
+              borderWidth: 0.5,
+            });
+
+          } catch (pdfErr) {
+            console.error("Error drawing card PDF: ", pdfErr);
+            // Draw a visible fallback placeholder indicating PDF read error so user knows which card failed
+            page.drawRectangle({
+              x,
+              y,
+              width: cardWidthPt,
+              height: cardHeightPt,
+              borderColor: rgb(0.9, 0.2, 0.2),
+              borderWidth: 1,
+              color: rgb(0.99, 0.95, 0.95),
+            });
+
+            // Draw placeholder text details
+            page.drawText(`PDF LOAD ERROR`, {
+              x: x + 15,
+              y: y + cardHeightPt - 25,
+              size: 10,
+              font,
+              color: rgb(0.9, 0.2, 0.2),
+            });
+            page.drawText(`EMP: ${item.empNo || "N/A"}`, {
+              x: x + 15,
+              y: y + cardHeightPt - 45,
+              size: 9,
+              font,
+              color: rgb(0.3, 0.3, 0.3),
+            });
+            page.drawText(`NIC: ${item.nicKey || "N/A"}`, {
+              x: x + 15,
+              y: y + cardHeightPt - 60,
+              size: 9,
+              font,
+              color: rgb(0.3, 0.3, 0.3),
+            });
+          }
+        }
+
+        const progressVal = Math.min(90, Math.floor(((i + cardsPerPage) / totalSelected) * 70) + 15);
+        setProgress(progressVal);
+      }
+
+      setProgress(95);
+      setProgressText(lang === "si" ? "PDF ලේඛනය සුරකිමින්..." : "Saving PDF document...");
+
+      const pdfBytes = await masterPdf.save();
+      const blob = new Blob([pdfBytes as any], { type: "application/pdf" });
+      const pdfUrl = URL.createObjectURL(blob);
+
+      setProgress(100);
+      setProgressText(lang === "si" ? "සාර්ථකයි!" : "Success!");
+
+      if (shouldTriggerBrowserPrint) {
+        // Direct print via hidden iframe
+        const iframe = document.createElement("iframe");
+        iframe.style.display = "none";
+        iframe.src = pdfUrl;
+        document.body.appendChild(iframe);
+        iframe.onload = () => {
+          if (iframe.contentWindow) {
+            iframe.contentWindow.focus();
+            iframe.contentWindow.print();
+          }
+          // Cleanup iframe after print dialog closes
+          setTimeout(() => {
+            document.body.removeChild(iframe);
+          }, 60000);
+        };
+      } else {
+        // Download trigger
+        const link = document.createElement("a");
+        link.href = pdfUrl;
+        link.download = `passes_print_${new Date().toISOString().slice(0, 10)}.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+
+      setTimeout(() => {
+        setIsProcessing(false);
+        setProgress(0);
+        setProgressText("");
+      }, 2000);
+
+    } catch (err) {
+      alert("Error compiling print PDF: " + (err as Error).message);
+      setIsProcessing(false);
+      setProgress(0);
+      setProgressText("");
+    }
   };
 
   // Parse Excel File
@@ -827,6 +1080,62 @@ export default function Home() {
 
     return items;
   }, [matchingData, statusFilter, searchQuery, filterType]);
+
+  // Print & Layout calculations
+  const { previewCols, previewRows, previewCardsPerPage, previewTotalPages, previewActivePage, pageItems, gridClassName } = useMemo(() => {
+    const { matchedList } = matchingData;
+    const selectedItemsForPrint = matchedList.filter(item => selectedPasses.has(item.originalPath));
+
+    let previewCols = 2;
+    let previewRows = 4;
+    let previewCardsPerPage = 8;
+
+    if (printLayout === "A5") {
+      if (printOrientation === "landscape") {
+        previewCols = 2;
+        previewRows = 2;
+        previewCardsPerPage = 4;
+      } else {
+        previewCols = 1;
+        previewRows = 3;
+        previewCardsPerPage = 3;
+      }
+    } else { // A4
+      if (printOrientation === "landscape") {
+        previewCols = 2;
+        previewRows = 3;
+        previewCardsPerPage = 6;
+      } else {
+        previewCols = 2;
+        previewRows = 4;
+        previewCardsPerPage = 8;
+      }
+    }
+
+    const previewTotalPages = Math.max(1, Math.ceil(selectedItemsForPrint.length / previewCardsPerPage));
+    const previewActivePage = Math.min(previewPageIdx, previewTotalPages - 1);
+    const startIdx = Math.max(0, previewActivePage * previewCardsPerPage);
+    const pageItems = selectedItemsForPrint.slice(startIdx, startIdx + previewCardsPerPage);
+
+    const gridClassName = 
+      previewCols === 1 
+        ? "grid grid-cols-1 grid-rows-3 gap-2 w-full h-full p-2"
+        : previewRows === 2 
+          ? "grid grid-cols-2 grid-rows-2 gap-2 w-full h-full p-2"
+          : previewRows === 3 
+            ? "grid grid-cols-2 grid-rows-3 gap-2 w-full h-full p-2"
+            : "grid grid-cols-2 grid-rows-4 gap-2 w-full h-full p-2";
+
+    return {
+      previewCols,
+      previewRows,
+      previewCardsPerPage,
+      previewTotalPages,
+      previewActivePage,
+      pageItems,
+      gridClassName
+    };
+  }, [matchingData, selectedPasses, printLayout, printOrientation, previewPageIdx]);
 
   // Send renamed PDF file to WhatsApp
   const handleSendWhatsApp = async (item: MatchResult, phoneNumber: string) => {
@@ -1846,6 +2155,14 @@ export default function Home() {
                   <table className="w-full text-left text-xs border-collapse">
                     <thead className="sticky top-0 bg-slate-900 z-20 shadow-[0_1px_0_0_rgba(255,255,255,0.05)]">
                       <tr className="text-slate-400 font-bold border-b border-slate-800 bg-slate-900">
+                        <th className="py-4 px-4 w-12 text-center">
+                          <input
+                            type="checkbox"
+                            checked={filteredList.length > 0 && filteredList.every((item) => selectedPasses.has(item.originalPath))}
+                            onChange={() => handleToggleAllPasses(filteredList)}
+                            className="rounded bg-slate-950 border-slate-800 text-teal-500 focus:ring-teal-500 h-4 w-4 cursor-pointer"
+                          />
+                        </th>
                         <th className="py-4 px-6">{lang === "si" ? "මුල් PDF (ZIP)" : "Original PDF (ZIP)"}</th>
                         <th className="py-4 px-4">{lang === "si" ? "NIC" : "NIC"}</th>
                         <th className="py-4 px-4">{lang === "si" ? "නම" : "Name"}</th>
@@ -1858,8 +2175,17 @@ export default function Home() {
                     </thead>
                     <tbody className="divide-y divide-slate-850/40">
                       {filteredList.map((item, idx) => (
-                        <tr key={idx} className="hover:bg-slate-900/50 hover:backdrop-blur-sm border-b border-slate-850/40 last:border-0 transition-all duration-200">
-                          
+                        <tr key={idx} className={`hover:bg-slate-900/50 hover:backdrop-blur-sm border-b border-slate-850/40 last:border-0 transition-all duration-200 ${
+                          selectedPasses.has(item.originalPath) ? "bg-teal-500/5" : ""
+                        }`}>
+                          <td className="py-4 px-4 text-center w-12">
+                            <input
+                              type="checkbox"
+                              checked={selectedPasses.has(item.originalPath)}
+                              onChange={() => handleTogglePass(item.originalPath)}
+                              className="rounded bg-slate-950 border-slate-800 text-teal-500 focus:ring-teal-500 h-4 w-4 cursor-pointer"
+                            />
+                          </td>
                           {/* Original PDF Name */}
                           <td className="py-4 px-6 font-mono text-slate-300 truncate max-w-[260px] hover:text-teal-400 transition-colors duration-150" title={item.originalName}>
                             {item.originalName}
@@ -2112,6 +2438,324 @@ export default function Home() {
 
             </div>
 
+          </div>
+        )}
+
+        {/* Floating Print Selection Bar */}
+        {selectedPasses.size > 0 && !isPrintPreviewOpen && (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-slate-900/90 border border-teal-500/30 px-6 py-4 rounded-2xl flex items-center justify-between gap-6 shadow-[0_10px_30px_rgba(20,184,166,0.15)] backdrop-blur-md animate-in slide-in-from-bottom duration-300 min-w-[320px] max-w-[90%]">
+            <div className="flex items-center gap-3">
+              <div className="h-2 w-2 rounded-full bg-teal-400 animate-ping" />
+              <span className="text-sm font-semibold text-slate-100">
+                {lang === "si" 
+                  ? `බලපත්‍ර ${selectedPasses.size} ක් තෝරාගෙන ඇත` 
+                  : `${selectedPasses.size} pass${selectedPasses.size === 1 ? "" : "es"} selected`
+                }
+              </span>
+            </div>
+            
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setSelectedPasses(new Set())}
+                className="text-xs px-3 py-2 rounded-xl text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+              >
+                {lang === "si" ? "සියල්ල අත්හරින්න" : "Clear"}
+              </button>
+              
+              <button
+                onClick={() => {
+                  setPreviewPageIdx(0);
+                  setIsPrintPreviewOpen(true);
+                }}
+                className="px-4 py-2 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-400 text-slate-950 font-bold text-xs tracking-wide shadow-md shadow-teal-500/10 hover:shadow-teal-400/20 hover:-translate-y-0.5 transition-all duration-200 flex items-center gap-1.5 cursor-pointer active:scale-95 text-slate-950 font-bold"
+              >
+                <Eye className="h-3.5 w-3.5" />
+                <span>{lang === "si" ? "පෙරදසුන බලන්න" : "Print Preview"}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Print Layout & Preview Overlay Modal */}
+        {isPrintPreviewOpen && (
+          <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 md:p-6 overflow-hidden animate-in fade-in duration-200">
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-7xl h-[90vh] flex flex-col overflow-hidden shadow-2xl relative">
+              
+              {/* Modal Header */}
+              <div className="px-6 py-5 border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md flex items-center justify-between sticky top-0 z-10">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400">
+                    <Printer className="h-5 w-5" />
+                  </div>
+                  <div className="text-left">
+                    <h3 className="text-base font-bold text-slate-100">
+                      {lang === "si" ? "මුද්‍රණ සැලසුම සහ පෙරදසුන" : "Print Layout & Page Preview"}
+                    </h3>
+                    <p className="text-xs text-slate-400 font-light mt-0.5">
+                      {lang === "si" ? "තෝරාගත් බලපත්‍ර A4 හෝ A5 පත්‍රයකට සකස් කිරීම" : "Arrange selected passes on sheets with exact sizes"}
+                    </p>
+                  </div>
+                </div>
+                
+                <button
+                  onClick={() => setIsPrintPreviewOpen(false)}
+                  className="p-2 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded-xl transition-all duration-200 cursor-pointer active:scale-95"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              {/* Modal Content Splitter */}
+              <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+                
+                {/* Left Sidebar: Controls (1/3 width) */}
+                <div className="w-full lg:w-96 border-r border-slate-800 bg-slate-900/40 p-6 flex flex-col justify-between overflow-y-auto gap-6 shrink-0">
+                  
+                  <div className="flex flex-col gap-6">
+                    
+                    {/* Setting: Sheet Format */}
+                    <div className="text-left">
+                      <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider block mb-2">
+                        {lang === "si" ? "පත්‍රිකා ප්‍රමාණය (Paper Size)" : "Paper Size"}
+                      </label>
+                      <div className="grid grid-cols-2 gap-2.5 bg-slate-950 p-1 rounded-xl border border-slate-850">
+                        <button
+                          onClick={() => {
+                            setPrintLayout("A4");
+                            setPreviewPageIdx(0);
+                          }}
+                          className={`py-2 px-3 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
+                            printLayout === "A4" 
+                              ? "bg-slate-800 text-teal-400 shadow-sm" 
+                              : "text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          A4 Sheet (8 Cards)
+                        </button>
+                        <button
+                          onClick={() => {
+                            setPrintLayout("A5");
+                            setPreviewPageIdx(0);
+                          }}
+                          className={`py-2 px-3 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
+                            printLayout === "A5" 
+                              ? "bg-slate-800 text-teal-400 shadow-sm" 
+                              : "text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          A5 Sheet
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Setting: Orientation */}
+                    <div className="text-left">
+                      <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider block mb-2">
+                        {lang === "si" ? "දිශානතිය (Page Orientation)" : "Page Orientation"}
+                      </label>
+                      <div className="grid grid-cols-2 gap-2.5 bg-slate-950 p-1 rounded-xl border border-slate-850">
+                        <button
+                          onClick={() => {
+                            setPrintOrientation("portrait");
+                            setPreviewPageIdx(0);
+                          }}
+                          className={`py-2 px-3 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
+                            printOrientation === "portrait" 
+                              ? "bg-slate-800 text-teal-400 shadow-sm" 
+                              : "text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          Portrait (සිරස්)
+                        </button>
+                        <button
+                          onClick={() => {
+                            setPrintOrientation("landscape");
+                            setPreviewPageIdx(0);
+                          }}
+                          className={`py-2 px-3 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
+                            printOrientation === "landscape" 
+                              ? "bg-slate-800 text-teal-400 shadow-sm" 
+                              : "text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          Landscape (තිරස්)
+                        </button>
+                      </div>
+                      <span className="text-[9px] text-slate-500 mt-1 block">
+                        {printLayout === "A5" 
+                          ? (printOrientation === "landscape" ? "A5 Landscape fits 4 cards (2x2 grid)" : "A5 Portrait fits 3 cards (1x3 grid)")
+                          : (printOrientation === "landscape" ? "A4 Landscape fits 6 cards (2x3 grid)" : "A4 Portrait fits 8 cards (2x4 grid)")
+                        }
+                      </span>
+                    </div>
+
+                    {/* Dimensions specifications info box */}
+                    <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-850 text-left">
+                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                        {lang === "si" ? "කාඩ්පත් මානයන් (Pass Dimensions)" : "Pass Card Dimensions"}
+                      </h4>
+                      <div className="mt-2.5 space-y-1.5 font-mono text-[11px] text-slate-300">
+                        <div className="flex justify-between">
+                          <span>{lang === "si" ? "පළල (Width)" : "Width (W)"}:</span>
+                          <strong className="text-teal-400">86 mm</strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>{lang === "si" ? "උස (Height)" : "Height (H)"}:</span>
+                          <strong className="text-teal-400">60.6 mm</strong>
+                        </div>
+                        <div className="h-px bg-slate-800/80 my-2" />
+                        <div className="flex justify-between">
+                          <span>{lang === "si" ? "තෝරාගත් ප්‍රමාණය" : "Selected Cards"}:</span>
+                          <span>{selectedPasses.size}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>{lang === "si" ? "මුළු පිටු ගණන" : "Total PDF Pages"}:</span>
+                          <span>{previewTotalPages}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                  </div>
+
+                  {/* Sidebar Footer Actions */}
+                  <div className="flex flex-col gap-3 pt-6 border-t border-slate-800">
+                    <button
+                      onClick={() => generatePrintPDF(true)}
+                      disabled={isProcessing}
+                      className="w-full py-3 px-4 rounded-xl bg-slate-850 hover:bg-slate-800 text-teal-400 hover:text-teal-300 border border-slate-700/50 font-bold text-xs tracking-wide shadow-sm flex items-center justify-center gap-2 cursor-pointer transition-all duration-200 active:scale-95 disabled:opacity-50"
+                    >
+                      <Printer className="h-4 w-4" />
+                      <span>{lang === "si" ? "කෙලින්ම Print කරන්න" : "Direct Print Sheet"}</span>
+                    </button>
+                    
+                    <button
+                      onClick={() => generatePrintPDF(false)}
+                      disabled={isProcessing}
+                      className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-400 hover:from-teal-400 hover:to-emerald-300 text-slate-950 font-bold text-xs tracking-wide shadow-lg shadow-teal-500/10 hover:shadow-teal-400/20 flex items-center justify-center gap-2 cursor-pointer transition-all duration-300 active:scale-95 disabled:opacity-50 text-slate-950 font-bold"
+                    >
+                      <Download className="h-4 w-4" />
+                      <span>{lang === "si" ? "PDF ලෙස බාගන්න" : "Download Print PDF"}</span>
+                    </button>
+                  </div>
+
+                </div>
+
+                {/* Right Area: Interactive Sheet Visualizer (2/3 width) */}
+                <div className="flex-1 bg-slate-950 p-6 flex flex-col justify-between items-center overflow-auto gap-4">
+                  
+                  {/* Visual Page Visualizer Container */}
+                  <div className="flex-1 w-full flex items-center justify-center min-h-[350px]">
+                    <div 
+                      className={`mx-auto bg-white text-slate-900 border border-slate-200 shadow-2xl relative transition-all duration-300 p-4 flex flex-col justify-between ${
+                        printLayout === "A4" 
+                          ? printOrientation === "landscape" 
+                            ? "w-full max-w-[550px] aspect-[297/210]" 
+                            : "h-full max-h-[500px] aspect-[210/297]"
+                          : printOrientation === "landscape" 
+                            ? "w-full max-w-[450px] aspect-[210/148]" 
+                            : "h-full max-h-[420px] aspect-[148/210]"
+                      }`}
+                      style={{
+                        boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 40px rgba(20, 184, 166, 0.05)"
+                      }}
+                    >
+                      {/* Grid representation */}
+                      <div className={gridClassName}>
+                        {Array.from({ length: previewCardsPerPage }).map((_, slotIdx) => {
+                          const item = pageItems[slotIdx];
+                          if (item) {
+                            return (
+                              <div 
+                                key={slotIdx} 
+                                className="bg-slate-50 border border-slate-300 rounded-lg p-2 flex flex-col justify-between relative overflow-hidden shadow-sm aspect-[86/60.6] select-none h-full hover:border-teal-500/50 transition-colors"
+                              >
+                                {/* Micro Card Badge Header */}
+                                <div className="flex items-center justify-between border-b border-slate-200 pb-1 text-[8px] text-slate-400 font-bold">
+                                  <span className="tracking-wider uppercase text-teal-600">Nexus Monthly Pass</span>
+                                  <span className="font-mono text-slate-500">W: 86 H: 60.6</span>
+                                </div>
+
+                                {/* Micro Card Content */}
+                                <div className="flex h-full gap-2 items-center text-slate-800 mt-1">
+                                  {/* Photo Box */}
+                                  <div className="w-8 h-10 bg-slate-200 border border-slate-300 rounded flex items-center justify-center shrink-0">
+                                    <svg className="h-5 w-5 text-slate-400" viewBox="0 0 24 24" fill="currentColor">
+                                      <path fillRule="evenodd" d="M7.5 6a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM3.751 20.105a8.25 8.25 0 0116.498 0 .75.75 0 01-.437.695A18.683 18.683 0 0112 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 01-.437-.695z" clipRule="evenodd" />
+                                    </svg>
+                                  </div>
+                                  
+                                  {/* Info details */}
+                                  <div className="flex-1 flex flex-col justify-center min-w-0 text-left">
+                                    <div className="text-[9px] font-black text-slate-900 truncate leading-tight">
+                                      {item.name || "Employee Pass"}
+                                    </div>
+                                    <div className="text-[10px] font-extrabold text-teal-600 font-mono mt-0.5 tracking-tight">
+                                      {item.empNo || "N/A"}
+                                    </div>
+                                    <div className="text-[7.5px] text-slate-500 font-mono leading-none mt-0.5 truncate">
+                                      NIC: {item.nicKey?.toUpperCase()}
+                                    </div>
+                                    {/* Mock Barcode lines */}
+                                    <div className="mt-1 flex gap-0.5 h-1.5 items-end overflow-hidden">
+                                      {[1, 3, 2, 4, 1, 2, 3, 1, 4, 2, 1, 3].map((width, idx) => (
+                                        <div key={idx} className="bg-slate-800 h-full" style={{ width: `${width}px` }} />
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          } else {
+                            return (
+                              <div 
+                                key={slotIdx} 
+                                className="border border-dashed border-slate-300 rounded-lg flex flex-col items-center justify-center aspect-[86/60.6] h-full bg-slate-50/20 text-slate-400 font-mono text-[9px] gap-1"
+                              >
+                                <span className="text-[14px] opacity-40">+</span>
+                                <span>{lang === "si" ? `හිස් කොටස ${slotIdx + 1}` : `Empty Slot ${slotIdx + 1}`}</span>
+                              </div>
+                            );
+                          }
+                        })}
+                      </div>
+                      
+                      {/* Visual cut line helpers info inside template */}
+                      <div className="text-[7px] text-slate-400 text-center select-none pt-1 border-t border-dashed border-slate-200">
+                        {lang === "si" ? "මුද්‍රණයෙන් පසු තිත් රේඛා ඔස්සේ කපා ගන්න" : "Cut along guides after printing"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Visual Page Pagination Controls */}
+                  {previewTotalPages > 1 && (
+                    <div className="flex items-center gap-4 bg-slate-900 border border-slate-800 px-4 py-2 rounded-xl">
+                      <button
+                        onClick={() => setPreviewPageIdx(p => Math.max(0, p - 1))}
+                        disabled={previewActivePage === 0}
+                        className="text-xs px-2.5 py-1.5 bg-slate-950 border border-slate-850 hover:border-slate-850 rounded-lg text-slate-300 disabled:opacity-40 disabled:pointer-events-none transition-all cursor-pointer"
+                      >
+                        &larr; {lang === "si" ? "පෙර පිටුව" : "Prev Page"}
+                      </button>
+                      
+                      <span className="text-xs font-mono text-slate-400">
+                        {lang === "si" ? "පිටුව" : "Page"} {previewActivePage + 1} / {previewTotalPages}
+                      </span>
+                      
+                      <button
+                        onClick={() => setPreviewPageIdx(p => Math.min(previewTotalPages - 1, p + 1))}
+                        disabled={previewActivePage === previewTotalPages - 1}
+                        className="text-xs px-2.5 py-1.5 bg-slate-950 border border-slate-850 hover:border-slate-850 rounded-lg text-slate-300 disabled:opacity-40 disabled:pointer-events-none transition-all cursor-pointer"
+                      >
+                        {lang === "si" ? "මීලඟ පිටුව" : "Next Page"} &rarr;
+                      </button>
+                    </div>
+                  )}
+
+                </div>
+
+              </div>
+
+            </div>
           </div>
         )}
 
