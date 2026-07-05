@@ -1331,7 +1331,7 @@ export default function Home() {
       const zipBlob = await zip.generateAsync({ type: "blob" });
 
       setProgress(80);
-      setProgressText("ගොනු බාගත කරමින්... / Downloading mock files...");
+      setProgressText("ගොනු බාගත කරමින් සහ දත්ත පූරණය කරමින්... / Downloading mock files & loading data...");
 
       // Download Excel
       const excelLink = document.createElement("a");
@@ -1349,14 +1349,42 @@ export default function Home() {
       zipLink.click();
       document.body.removeChild(zipLink);
 
+      // Populate states immediately in-memory for instant testing
+      setExcelFile(new File([excelBlob], "sample_employee_list.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      setExcelData(demoData);
+      setSheets(["Employees"]);
+      setSelectedSheet("Employees");
+      setHeaders(Object.keys(demoData[0]));
+      setNicColumn("NIC Number");
+      setEmpColumn("Employee Number");
+      setNameColumn("Employee Name");
+      setPhoneColumn("Phone Number");
+      setPhoneColumn2("Alt Phone");
+
+      setZipFile(new File([zipBlob], "sample_nic_pdfs.zip", { type: "application/zip" }));
+      setZipInstance(zip);
+
+      const extractedFiles: { name: string; path: string; fileObj: JSZip.JSZipObject }[] = [];
+      zip.forEach((relativepath, fileObj) => {
+        if (!fileObj.dir && relativepath.toLowerCase().endsWith(".pdf")) {
+          const filename = relativepath.split("/").pop() || relativepath;
+          extractedFiles.push({
+            name: filename,
+            path: relativepath,
+            fileObj: fileObj
+          });
+        }
+      });
+      setZipFileList(extractedFiles);
+
       setProgress(100);
-      setProgressText("සාර්ථකයි! ගොනු 2ක් බාගත විය. / Success! 2 mock files downloaded. Drag and drop them to test!");
+      setProgressText("සාර්ථකයි! ආදර්ශ දත්ත පූරණය විය. / Success! Demo data loaded & files downloaded.");
 
       setTimeout(() => {
         setIsProcessing(false);
         setProgress(0);
         setProgressText("");
-      }, 4000);
+      }, 3000);
 
     } catch (err) {
       alert("Error generating demo data: " + (err as Error).message);
